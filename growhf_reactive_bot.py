@@ -144,7 +144,7 @@ def calculate_position_size(equity_usd, vol_ratio, pct_change, cfg_sizing):
     return position_notional
 
 
-def process_okx_spike(row, cfg, signal_history):
+def process_okx_spike(row, cfg, signal_history, last_alert):
     """Evaluate OKX spike for execution."""
     inst_id = row["instId"]
     try:
@@ -158,7 +158,7 @@ def process_okx_spike(row, cfg, signal_history):
 
     now = time.time()
 
-    if inst_id in signal_history and now - signal_history[inst_id]["ts"] < cooldown:
+    if inst_id in last_alert and now - last_alert[inst_id] < cooldown:
         return None
 
     dq = signal_history[inst_id]
@@ -196,7 +196,7 @@ def process_okx_spike(row, cfg, signal_history):
         if vol_ratio < vol_multiplier:
             continue
 
-        signal_history[inst_id]["ts"] = now
+        last_alert[inst_id] = now
 
         sizing_cfg = cfg.get("sizing", {})
         equity = sizing_cfg.get("account_equity_usd", 300)
@@ -224,7 +224,8 @@ def main_loop():
     chat_id = cfg["telegram_chat_id"]
     poll_interval = cfg.get("poll_interval_seconds", 15)
 
-    signal_history = defaultdict(lambda: {"ts": 0, "prices": deque(maxlen=100)})
+    signal_history = defaultdict(lambda: deque(maxlen=100))
+    last_alert = {}
 
     logger.info(f"GrowiHF Reactive Bot started. Poll={poll_interval}s, Account=${cfg['sizing'].get('account_equity_usd', 300)}")
     send_telegram(token, chat_id, "🤖 GrowiHF reactive bot started (OKX + Hyperliquid)")
@@ -244,7 +245,7 @@ def main_loop():
 
             for row in tickers:
                 try:
-                    signal = process_okx_spike(row, cfg, signal_history)
+                    signal = process_okx_spike(row, cfg, signal_history, last_alert)
                     if signal:
                         logger.info(f"SIGNAL: {signal['pair']} {signal['direction']} {signal['pct_change']:.2f}%")
                         send_telegram(token, chat_id, signal["signal_text"])
