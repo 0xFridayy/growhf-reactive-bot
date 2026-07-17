@@ -1,0 +1,19 @@
+[Unit]
+Description=GrowiHF Reactive Signal Bot
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=growhf
+WorkingDirectory=/opt/growhf
+Environment="PATH=/opt/growhf/venv/bin"
+ExecStart=/opt/growhf/venv/bin/python growhf_reactive_bot.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=growhf
+
+[Install]
+WantedBy=multi-user.target

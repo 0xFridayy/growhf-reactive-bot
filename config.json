@@ -1,0 +1,26 @@
+{
+  "telegram_bot_token": "8841953338:AAHnsQnUrSIAyDKrDAxH-1IGuRUKBEIFWUA",
+  "telegram_chat_id": "8067721654",
+  "quote_filter": "USDT",
+  "poll_interval_seconds": 15,
+  "price_thresholds": {
+    "60": 3.0,
+    "300": 5.0
+  },
+  "volume_spike_multiplier": 3.0,
+  "cooldown_seconds": 900,
+  "sizing": {
+    "enabled": true,
+    "account_equity_usd": 280.0,
+    "kelly_fraction": 0.25,
+    "max_risk_per_trade": 0.02,
+    "max_leverage": 3.0,
+    "exchange_max_leverage": 50.0,
+    "min_notional_usd": 5.0,
+    "max_concurrent": 3,
+    "stop_buffer_frac": 0.001,
+    "min_stop_frac": 0.004,
+    "max_stop_frac": 0.05,
+    "swing_lookback_candles": 10
+  }
+}

@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  growhf-bot:
+    build: .
+    container_name: growhf-bot
+    restart: unless-stopped
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./logs:/app/logs
+    environment:
+      - TZ=UTC
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
