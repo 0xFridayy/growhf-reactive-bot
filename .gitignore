@@ -52,6 +52,11 @@ logs/
 *.db
 *.sqlite
 
+# Exception: nlp-macro-event-bot cron persists dedup state across runs by
+# committing these back to the repo (see .github/workflows/nlp-macro-event-bot.yml)
+!nlp-macro-event-bot/macro_bot_state.json
+!nlp-macro-event-bot/news_nlp.db
+
 # macOS
 .DS_Store
 

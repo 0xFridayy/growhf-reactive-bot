@@ -1,0 +1,64 @@
+name: NLP Macro Event Bot (cron)
+
+on:
+  # GitHub's native schedule trigger silently drops most ticks at tight
+  # (5-min) intervals — an external cron service (cron-job.org) calls
+  # workflow_dispatch on a real schedule instead. Kept as a low-frequency
+  # safety net in case that external trigger ever stops firing.
+  schedule:
+    - cron: "0,30 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nlp-macro-event-bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nlp-macro-event-bot
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements-ci.txt
+
+      - name: Run macro event bot (T-60 alerts, 07:30 WIB daily digest)
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python macro_event_bot.py --once
+
+      - name: Run news NLP bot (RSS -> classify -> LLM score -> alert)
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python news_nlp_bot.py --once
+
+      - name: Persist state (dedup + SQLite) back to the repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A macro_bot_state.json news_nlp.db 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "chore: update bot state [skip ci]"
+          # Scheduled runs can queue for a long time (GitHub-side delay on
+          # tight cron intervals), so the repo may have moved on by the time
+          # we push. Rebase onto the latest main and retry a few times
+          # instead of failing the whole run over a state-file race.
+          for i in 1 2 3 4 5; do
+            git push && break
+            echo "push rejected, rebasing onto origin/main (attempt $i)"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; break; }
+          done
