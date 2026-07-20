@@ -44,6 +44,7 @@ DB  = "news_nlp.db"
 ALERT_THRESHOLD = 3                  # send Telegram alert if impact >= this
 KEYWORD_ALERT_THRESHOLD = 3          # fallback alert gate when no Claude key
 MAX_LLM_HEADLINES_PER_CYCLE = 10     # cost guard
+MAX_KEYWORD_ALERTS_PER_CYCLE = 3     # fallback alert cap (per category, highest score)
 POLL_SECONDS = 60
 
 if not HAVE_ANTHROPIC:
@@ -184,6 +185,15 @@ def cycle():
     con = db_init()
     candidates = []   # (id, category, title, link, base_score)
 
+    # First-ever run: the dedup table is empty, so every current headline
+    # across all feeds would look "new" and fire at once. Seed silently —
+    # insert everything as seen, alert on nothing this cycle — then alert
+    # normally from the next cycle on as genuinely new items appear.
+    is_seed_run = con.execute("SELECT COUNT(*) FROM news").fetchone()[0] == 0
+    if is_seed_run:
+        print("[news_nlp_bot] Empty DB — seeding dedup table silently "
+              "(no alerts this cycle) to avoid an RSS-backfill flood.")
+
     for feed_url in FEEDS:
         try:
             feed = feedparser.parse(feed_url)
@@ -208,6 +218,11 @@ def cycle():
                 candidates.append((nid, cat, title, link, score))
     con.commit()
 
+    if is_seed_run:
+        con.commit()
+        con.close()
+        return
+
     # Stage 2: score the top candidates (cost-guarded) — skipped entirely if
     # no Claude key, so we don't burn a network call to a 401 every cycle.
     candidates.sort(key=lambda x: -x[4])
@@ -229,10 +244,21 @@ def cycle():
     else:
         # No sentiment/impact to write — market_risk_state() only reads rows
         # with impact set, so these are honestly excluded from that aggregate.
+        # Different feeds often carry the same story under different
+        # headlines (e.g. "US agencies miss..." vs "US regulators miss...");
+        # without Claude to notice that, cap to one alert per category
+        # (highest keyword score) and MAX_KEYWORD_ALERTS_PER_CYCLE overall.
+        seen_categories = set()
+        fired = 0
         for nid, cat, title, link, score in batch:
-            if score >= KEYWORD_ALERT_THRESHOLD:
-                alert_keyword_tier(cat, title, link, score)
-                con.execute("UPDATE news SET alerted=1 WHERE id=?", (nid,))
+            if score < KEYWORD_ALERT_THRESHOLD or cat in seen_categories:
+                continue
+            if fired >= MAX_KEYWORD_ALERTS_PER_CYCLE:
+                break
+            alert_keyword_tier(cat, title, link, score)
+            con.execute("UPDATE news SET alerted=1 WHERE id=?", (nid,))
+            seen_categories.add(cat)
+            fired += 1
     con.commit()
     con.close()
 
