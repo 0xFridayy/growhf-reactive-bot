@@ -41,13 +41,19 @@ CHAT_ID   = os.environ.get("TG_CHAT_ID") or os.environ.get("MACRO_BOT_CHAT_ID", 
 
 GROQ_KEY      = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL    = "llama-3.3-70b-versatile"   # free tier, no card required
+XAI_KEY       = os.environ.get("XAI_API_KEY", "")
+XAI_MODEL     = "grok-4-fast"               # paid; OpenAI-compatible endpoint
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "PASTE_YOUR_API_KEY")
 ANTHROPIC_MODEL = "claude-haiku-4-5"
 
 HAVE_GROQ      = bool(GROQ_KEY)
+HAVE_XAI       = bool(XAI_KEY)
 HAVE_ANTHROPIC = ANTHROPIC_KEY not in ("PASTE_YOUR_API_KEY", "")
-HAVE_LLM       = HAVE_GROQ or HAVE_ANTHROPIC
-LLM_PROVIDER   = "groq" if HAVE_GROQ else ("anthropic" if HAVE_ANTHROPIC else "none")
+HAVE_LLM       = HAVE_GROQ or HAVE_XAI or HAVE_ANTHROPIC
+# Priority: Groq (free) > xAI (paid) > Anthropic (paid) — cheapest first.
+LLM_PROVIDER   = ("groq" if HAVE_GROQ else
+                   "xai" if HAVE_XAI else
+                   "anthropic" if HAVE_ANTHROPIC else "none")
 
 WIB = ZoneInfo("Asia/Jakarta")
 DB  = "news_nlp.db"
@@ -145,6 +151,19 @@ def llm_score_groq(headlines):
     return _parse_score_response(text, headlines)
 
 
+def llm_score_xai(headlines):
+    """xAI Grok — OpenAI-compatible chat completions API. Paid."""
+    r = requests.post("https://api.x.ai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {XAI_KEY}",
+                 "content-type": "application/json"},
+        json={"model": XAI_MODEL, "max_tokens": 1500, "temperature": 0,
+              "messages": [{"role": "user", "content": _score_prompt(headlines)}]},
+        timeout=30)
+    r.raise_for_status()
+    text = r.json()["choices"][0]["message"]["content"]
+    return _parse_score_response(text, headlines)
+
+
 def llm_score_anthropic(headlines):
     r = requests.post("https://api.anthropic.com/v1/messages",
         headers={"x-api-key": ANTHROPIC_KEY,
@@ -163,7 +182,11 @@ def llm_score(headlines):
     if not headlines or not HAVE_LLM:
         return {}
     try:
-        return llm_score_groq(headlines) if HAVE_GROQ else llm_score_anthropic(headlines)
+        if HAVE_GROQ:
+            return llm_score_groq(headlines)
+        if HAVE_XAI:
+            return llm_score_xai(headlines)
+        return llm_score_anthropic(headlines)
     except Exception as e:
         print(f"[llm error, provider={LLM_PROVIDER}] {e}")
         return {}
