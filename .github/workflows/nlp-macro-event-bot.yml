@@ -1,8 +1,12 @@
 name: NLP Macro Event Bot (cron)
 
 on:
+  # GitHub's native schedule trigger silently drops most ticks at tight
+  # (5-min) intervals — an external cron service (cron-job.org) calls
+  # workflow_dispatch on a real schedule instead. Kept as a low-frequency
+  # safety net in case that external trigger ever stops firing.
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "0,30 * * * *"
   workflow_dispatch: {}
 
 permissions:
