@@ -217,6 +217,8 @@ def cycle():
             if cat and score >= 2:
                 candidates.append((nid, cat, title, link, score))
     con.commit()
+    print(f"[news_nlp_bot] {len(candidates)} new candidate(s) this cycle "
+          f"(seed_run={is_seed_run}, have_anthropic={HAVE_ANTHROPIC})")
 
     if is_seed_run:
         con.commit()
@@ -228,6 +230,7 @@ def cycle():
     candidates.sort(key=lambda x: -x[4])
     batch = candidates[:MAX_LLM_HEADLINES_PER_CYCLE]
 
+    fired = 0
     if HAVE_ANTHROPIC:
         scores = llm_score([(c[0], c[1], c[2]) for c in batch])
         for nid, cat, title, link, _ in batch:
@@ -241,6 +244,7 @@ def cycle():
                 alert((cat, title, link, s["sentiment"], s["impact"],
                        s.get("assets", "BTC"), s.get("rationale", "")))
                 con.execute("UPDATE news SET alerted=1 WHERE id=?", (nid,))
+                fired += 1
     else:
         # No sentiment/impact to write — market_risk_state() only reads rows
         # with impact set, so these are honestly excluded from that aggregate.
@@ -261,6 +265,7 @@ def cycle():
             fired += 1
     con.commit()
     con.close()
+    print(f"[news_nlp_bot] {fired} alert(s) sent this cycle")
 
 
 def market_risk_state(minutes=60):
