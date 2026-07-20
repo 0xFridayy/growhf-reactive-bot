@@ -1,0 +1,6 @@
+# Minimal deps for the GitHub Actions --once cron (macro_event_bot.py + news_nlp_bot.py).
+# The modeling/telethon/websockets layers in requirements.txt aren't needed here.
+requests>=2.31
+feedparser>=6.0
+APScheduler>=3.10
+tzdata>=2024.1

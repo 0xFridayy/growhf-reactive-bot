@@ -1,0 +1,49 @@
+name: NLP Macro Event Bot (cron)
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nlp-macro-event-bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nlp-macro-event-bot
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements-ci.txt
+
+      - name: Run macro event bot (T-60 alerts, 07:30 WIB daily digest)
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python macro_event_bot.py --once
+
+      - name: Run news NLP bot (RSS -> classify -> Haiku score -> alert)
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python news_nlp_bot.py --once
+
+      - name: Persist state (dedup + SQLite) back to the repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A macro_bot_state.json news_nlp.db 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "chore: update bot state [skip ci]"
+          git push

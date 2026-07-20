@@ -1,0 +1,22 @@
+# Core (existing bots)
+requests>=2.31
+feedparser>=6.0
+APScheduler>=3.10
+tzdata>=2024.1          # Windows needs this for zoneinfo
+
+# Real-time news layer (feeds_ws.py)
+websockets>=12.0
+
+# Telegram firehose (telegram_listener.py) — pin: repo is in maintenance mode
+telethon==1.44.0
+
+# Modeling layer (features.py + model_lab.py — build-plan step 4)
+numpy>=1.26
+pandas>=2.1
+scikit-learn>=1.4
+xgboost>=2.0
+# lightgbm>=4.0        # optional; model_lab auto-uses it if present, else xgboost
+# vectorbt>=0.26       # optional cross-check backtester (not required)
+
+# NOTE: Claude Haiku scoring uses the raw HTTP API via `requests` (no SDK dep).
+# Set ANTHROPIC_API_KEY.
