@@ -33,10 +33,11 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python macro_event_bot.py --once
 
-      - name: Run news NLP bot (RSS -> classify -> Haiku score -> alert)
+      - name: Run news NLP bot (RSS -> classify -> LLM score -> alert)
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python news_nlp_bot.py --once
 

@@ -42,7 +42,8 @@ py -m pip install -r requirements.txt
 Env vars (set what each feature needs):
 
 ```
-TG_BOT_TOKEN      TG_CHAT_ID          ANTHROPIC_API_KEY     # core (same bot as okx_spike_screener.py)
+TG_BOT_TOKEN      TG_CHAT_ID                                 # core (same bot as okx_spike_screener.py)
+GROQ_API_KEY      (or ANTHROPIC_API_KEY)                      # Stage-2 scoring; Groq free tier preferred
 FINNHUB_API_KEY   FRED_API_KEY        COINMARKETCAL_API_KEY # free-tier calendars
 TREE_API_KEY      PHOENIX_API_KEY                            # optional WS auth (Tree free w/o)
 TELEGRAM_API_ID   TELEGRAM_API_HASH                          # Telethon (burner account)

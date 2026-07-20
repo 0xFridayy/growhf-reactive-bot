@@ -3,15 +3,19 @@ NEWS NLP BOT — Real-time market news engine (Bloomberg-lite)
 ============================================================
 Pipeline (runs every 60s):
   RSS feeds -> dedupe (SQLite) -> Stage 1 rule classifier (free, instant)
-            -> Stage 2 Claude scoring (only for candidates) -> Telegram alert
+            -> Stage 2 LLM scoring (only for candidates) -> Telegram alert
 
 Stage 1 kills ~95% of noise with keyword taxonomy.
-Stage 2 sends surviving headlines to Claude (batched, 1 call per cycle)
+Stage 2 sends surviving headlines to an LLM (batched, 1 call per cycle)
 and returns: sentiment (-5..+5), impact (1..5), assets, rationale.
+Provider is picked at import time, first available wins:
+  1. Groq (GROQ_API_KEY)       — free tier, no credit card, llama-3.3-70b
+  2. Anthropic (ANTHROPIC_API_KEY) — paid, Claude Haiku
+  3. none — falls back to Stage-1 keyword-tier alerts only
 
 Run:  py news_nlp_bot.py
 Deps: py -m pip install requests feedparser apscheduler tzdata
-Env:  ANTHROPIC_API_KEY, TG_BOT_TOKEN, TG_CHAT_ID (same bot as okx_spike_screener.py)
+Env:  GROQ_API_KEY or ANTHROPIC_API_KEY, TG_BOT_TOKEN, TG_CHAT_ID (same bot as okx_spike_screener.py)
 """
 
 import hashlib
@@ -34,22 +38,28 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # bot) so news/sentiment alerts land in one Telegram shell alongside spikes.
 BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or os.environ.get("MACRO_BOT_TOKEN", "PASTE_YOUR_BOT_TOKEN")
 CHAT_ID   = os.environ.get("TG_CHAT_ID") or os.environ.get("MACRO_BOT_CHAT_ID", "PASTE_YOUR_CHAT_ID")
+
+GROQ_KEY      = os.environ.get("GROQ_API_KEY", "")
+GROQ_MODEL    = "llama-3.3-70b-versatile"   # free tier, no card required
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "PASTE_YOUR_API_KEY")
+ANTHROPIC_MODEL = "claude-haiku-4-5"
+
+HAVE_GROQ      = bool(GROQ_KEY)
 HAVE_ANTHROPIC = ANTHROPIC_KEY not in ("PASTE_YOUR_API_KEY", "")
-MODEL = "claude-haiku-4-5"          # cheap + fast; upgrade to sonnet if needed
+HAVE_LLM       = HAVE_GROQ or HAVE_ANTHROPIC
+LLM_PROVIDER   = "groq" if HAVE_GROQ else ("anthropic" if HAVE_ANTHROPIC else "none")
 
 WIB = ZoneInfo("Asia/Jakarta")
 DB  = "news_nlp.db"
 
 ALERT_THRESHOLD = 3                  # send Telegram alert if impact >= this
-KEYWORD_ALERT_THRESHOLD = 3          # fallback alert gate when no Claude key
+KEYWORD_ALERT_THRESHOLD = 3          # fallback alert gate when no LLM key
 MAX_LLM_HEADLINES_PER_CYCLE = 10     # cost guard
 MAX_KEYWORD_ALERTS_PER_CYCLE = 3     # fallback alert cap (per category, highest score)
 POLL_SECONDS = 60
 
-if not HAVE_ANTHROPIC:
-    print("[news_nlp_bot] No ANTHROPIC_API_KEY — Stage 2 scoring disabled, "
-          "alerting on Stage-1 keyword score only.")
+print(f"[news_nlp_bot] Stage 2 provider: {LLM_PROVIDER}"
+      + ("" if HAVE_LLM else " — alerting on Stage-1 keyword score only."))
 
 FEEDS = [
     # Crypto-native
@@ -92,14 +102,11 @@ def news_id(title, link):
 
 
 # ----------------------------------------------------------------------
-# STAGE 2 — CLAUDE SCORING (batched)
+# STAGE 2 — LLM SCORING (batched, provider-agnostic)
 # ----------------------------------------------------------------------
-def llm_score(headlines):
-    """headlines: list of (id, category, title). Returns {id: dict}."""
-    if not headlines:
-        return {}
+def _score_prompt(headlines):
     items = "\n".join(f'{i+1}. [{c}] {t}' for i, (_, c, t) in enumerate(headlines))
-    prompt = f"""You are a crypto/macro trading desk analyst. Score each headline.
+    return f"""You are a crypto/macro trading desk analyst. Score each headline.
 
 Headlines:
 {items}
@@ -112,25 +119,53 @@ Respond ONLY with a JSON array, one object per headline, same order:
 
 Scoring guide: Fed policy surprises / CPI shocks / major regulation / big hacks = 4-5.
 Routine commentary / minor project news = 1-2. Old or speculative news = lower impact."""
+
+
+def _parse_score_response(text, headlines):
+    text = text.replace("```json", "").replace("```", "").strip()
+    scores = json.loads(text)
+    out = {}
+    for s in scores:
+        idx = s["n"] - 1
+        if 0 <= idx < len(headlines):
+            out[headlines[idx][0]] = s
+    return out
+
+
+def llm_score_groq(headlines):
+    """Free tier, no credit card. OpenAI-compatible chat completions API."""
+    r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {GROQ_KEY}",
+                 "content-type": "application/json"},
+        json={"model": GROQ_MODEL, "max_tokens": 1500, "temperature": 0,
+              "messages": [{"role": "user", "content": _score_prompt(headlines)}]},
+        timeout=30)
+    r.raise_for_status()
+    text = r.json()["choices"][0]["message"]["content"]
+    return _parse_score_response(text, headlines)
+
+
+def llm_score_anthropic(headlines):
+    r = requests.post("https://api.anthropic.com/v1/messages",
+        headers={"x-api-key": ANTHROPIC_KEY,
+                 "anthropic-version": "2023-06-01",
+                 "content-type": "application/json"},
+        json={"model": ANTHROPIC_MODEL, "max_tokens": 1500,
+              "messages": [{"role": "user", "content": _score_prompt(headlines)}]},
+        timeout=30)
+    r.raise_for_status()
+    text = r.json()["content"][0]["text"]
+    return _parse_score_response(text, headlines)
+
+
+def llm_score(headlines):
+    """headlines: list of (id, category, title). Returns {id: dict}."""
+    if not headlines or not HAVE_LLM:
+        return {}
     try:
-        r = requests.post("https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": ANTHROPIC_KEY,
-                     "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": MODEL, "max_tokens": 1500,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=30)
-        text = r.json()["content"][0]["text"]
-        text = text.replace("```json", "").replace("```", "").strip()
-        scores = json.loads(text)
-        out = {}
-        for s in scores:
-            idx = s["n"] - 1
-            if 0 <= idx < len(headlines):
-                out[headlines[idx][0]] = s
-        return out
+        return llm_score_groq(headlines) if HAVE_GROQ else llm_score_anthropic(headlines)
     except Exception as e:
-        print(f"[llm error] {e}")
+        print(f"[llm error, provider={LLM_PROVIDER}] {e}")
         return {}
 
 
@@ -172,9 +207,9 @@ def alert(row):
 
 
 def alert_keyword_tier(cat, title, link, score):
-    """Fallback when no ANTHROPIC_API_KEY: no sentiment/impact/rationale,
-    just the Stage-1 keyword hit — still better than silence."""
-    send(f"⚠️ <b>[{cat}] keyword score {score}</b> (no Claude key — unscored)\n\n"
+    """Fallback when no LLM key (Groq/Anthropic) is set: no sentiment/impact/
+    rationale, just the Stage-1 keyword hit — still better than silence."""
+    send(f"⚠️ <b>[{cat}] keyword score {score}</b> (no LLM key — unscored)\n\n"
          f"<b>{title}</b>\n\n{btc_price()}\n<a href='{link}'>source</a>")
 
 
@@ -218,7 +253,7 @@ def cycle():
                 candidates.append((nid, cat, title, link, score))
     con.commit()
     print(f"[news_nlp_bot] {len(candidates)} new candidate(s) this cycle "
-          f"(seed_run={is_seed_run}, have_anthropic={HAVE_ANTHROPIC})")
+          f"(seed_run={is_seed_run}, llm_provider={LLM_PROVIDER})")
 
     if is_seed_run:
         con.commit()
@@ -226,12 +261,12 @@ def cycle():
         return
 
     # Stage 2: score the top candidates (cost-guarded) — skipped entirely if
-    # no Claude key, so we don't burn a network call to a 401 every cycle.
+    # no LLM key, so we don't burn a network call to a 401 every cycle.
     candidates.sort(key=lambda x: -x[4])
     batch = candidates[:MAX_LLM_HEADLINES_PER_CYCLE]
 
     fired = 0
-    if HAVE_ANTHROPIC:
+    if HAVE_LLM:
         scores = llm_score([(c[0], c[1], c[2]) for c in batch])
         for nid, cat, title, link, _ in batch:
             s = scores.get(nid)
