@@ -216,15 +216,26 @@ def btc_price():
         return ""
 
 
-SENT_EMOJI = {-5: "🔴🔴", -4: "🔴🔴", -3: "🔴", -2: "🔴", -1: "🟠",
-              0: "⚪", 1: "🟢", 2: "🟢", 3: "🟢", 4: "🟢🟢", 5: "🟢🟢"}
+def bias_and_power(sent, impact):
+    """Turn raw (sentiment -5..5, impact 1..5) into a trader-readable
+    direction + a single 0-10 conviction score (magnitude + impact,
+    both capped 0-5, so the sum naturally lands in 0-10)."""
+    if sent > 0:
+        bias, emoji = "LONG", "📈"
+    elif sent < 0:
+        bias, emoji = "SHORT", "📉"
+    else:
+        bias, emoji = "NEUTRAL", "⚪"
+    power = min(10, abs(sent) + impact)
+    return bias, emoji, power
 
 
 def alert(row):
     cat, title, link, sent, impact, assets, rationale = row
+    bias, emoji, power = bias_and_power(sent, impact)
     fire = "🚨" * max(1, impact - 2)
-    send(f"{fire} <b>[{cat}] impact {impact}/5</b>\n"
-         f"{SENT_EMOJI.get(sent, '⚪')} sentiment {sent:+d} | {assets}\n\n"
+    send(f"{fire} <b>[{cat}]</b>\n"
+         f"{emoji} <b>{bias}</b> | power {power}/10 | {assets}\n\n"
          f"<b>{title}</b>\n{rationale}\n\n"
          f"{btc_price()}\n<a href='{link}'>source</a>")
 
