@@ -35,14 +35,20 @@ from apscheduler.schedulers.background import BackgroundScheduler
 BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or os.environ.get("MACRO_BOT_TOKEN", "PASTE_YOUR_BOT_TOKEN")
 CHAT_ID   = os.environ.get("TG_CHAT_ID") or os.environ.get("MACRO_BOT_CHAT_ID", "PASTE_YOUR_CHAT_ID")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "PASTE_YOUR_API_KEY")
+HAVE_ANTHROPIC = ANTHROPIC_KEY not in ("PASTE_YOUR_API_KEY", "")
 MODEL = "claude-haiku-4-5"          # cheap + fast; upgrade to sonnet if needed
 
 WIB = ZoneInfo("Asia/Jakarta")
 DB  = "news_nlp.db"
 
 ALERT_THRESHOLD = 3                  # send Telegram alert if impact >= this
+KEYWORD_ALERT_THRESHOLD = 3          # fallback alert gate when no Claude key
 MAX_LLM_HEADLINES_PER_CYCLE = 10     # cost guard
 POLL_SECONDS = 60
+
+if not HAVE_ANTHROPIC:
+    print("[news_nlp_bot] No ANTHROPIC_API_KEY — Stage 2 scoring disabled, "
+          "alerting on Stage-1 keyword score only.")
 
 FEEDS = [
     # Crypto-native
@@ -164,6 +170,13 @@ def alert(row):
          f"{btc_price()}\n<a href='{link}'>source</a>")
 
 
+def alert_keyword_tier(cat, title, link, score):
+    """Fallback when no ANTHROPIC_API_KEY: no sentiment/impact/rationale,
+    just the Stage-1 keyword hit — still better than silence."""
+    send(f"⚠️ <b>[{cat}] keyword score {score}</b> (no Claude key — unscored)\n\n"
+         f"<b>{title}</b>\n\n{btc_price()}\n<a href='{link}'>source</a>")
+
+
 # ----------------------------------------------------------------------
 # MAIN CYCLE
 # ----------------------------------------------------------------------
@@ -195,22 +208,31 @@ def cycle():
                 candidates.append((nid, cat, title, link, score))
     con.commit()
 
-    # Stage 2: score the top candidates (cost-guarded)
+    # Stage 2: score the top candidates (cost-guarded) — skipped entirely if
+    # no Claude key, so we don't burn a network call to a 401 every cycle.
     candidates.sort(key=lambda x: -x[4])
     batch = candidates[:MAX_LLM_HEADLINES_PER_CYCLE]
-    scores = llm_score([(c[0], c[1], c[2]) for c in batch])
 
-    for nid, cat, title, link, _ in batch:
-        s = scores.get(nid)
-        if not s:
-            continue
-        con.execute("UPDATE news SET sentiment=?, impact=?, assets=?, rationale=? WHERE id=?",
-                    (s["sentiment"], s["impact"], s.get("assets", "BTC"),
-                     s.get("rationale", ""), nid))
-        if s["impact"] >= ALERT_THRESHOLD:
-            alert((cat, title, link, s["sentiment"], s["impact"],
-                   s.get("assets", "BTC"), s.get("rationale", "")))
-            con.execute("UPDATE news SET alerted=1 WHERE id=?", (nid,))
+    if HAVE_ANTHROPIC:
+        scores = llm_score([(c[0], c[1], c[2]) for c in batch])
+        for nid, cat, title, link, _ in batch:
+            s = scores.get(nid)
+            if not s:
+                continue
+            con.execute("UPDATE news SET sentiment=?, impact=?, assets=?, rationale=? WHERE id=?",
+                        (s["sentiment"], s["impact"], s.get("assets", "BTC"),
+                         s.get("rationale", ""), nid))
+            if s["impact"] >= ALERT_THRESHOLD:
+                alert((cat, title, link, s["sentiment"], s["impact"],
+                       s.get("assets", "BTC"), s.get("rationale", "")))
+                con.execute("UPDATE news SET alerted=1 WHERE id=?", (nid,))
+    else:
+        # No sentiment/impact to write — market_risk_state() only reads rows
+        # with impact set, so these are honestly excluded from that aggregate.
+        for nid, cat, title, link, score in batch:
+            if score >= KEYWORD_ALERT_THRESHOLD:
+                alert_keyword_tier(cat, title, link, score)
+                con.execute("UPDATE news SET alerted=1 WHERE id=?", (nid,))
     con.commit()
     con.close()
 
