@@ -1,21 +1,30 @@
 """
 NEWS NLP BOT — Real-time market news engine (Bloomberg-lite)
 ============================================================
-Pipeline (runs every 60s):
-  RSS feeds -> dedupe (SQLite) -> Stage 1 rule classifier (free, instant)
-            -> Stage 2 LLM scoring (only for candidates) -> Telegram alert
+Two ingestion paths feeding one pipeline:
+  RSS feeds        -> Stage 1 keyword classifier (English-only) -> candidates
+  Telegram channels -> (curated already, no keyword gate)        -> candidates
+Then: dedupe (SQLite) -> Stage 2 LLM scoring (only for candidates) -> Telegram alert
 
-Stage 1 kills ~95% of noise with keyword taxonomy.
-Stage 2 sends surviving headlines to an LLM (batched, 1 call per cycle)
-and returns: sentiment (-5..+5), impact (1..5), assets, rationale.
+Stage 1 kills ~95% of RSS noise with an English keyword taxonomy. It does NOT
+gate Telegram channels (TELEGRAM_CHANNELS) — those are scraped from the public
+t.me/s/<channel> preview (no login), assumed pre-curated, and every new post
+becomes a candidate as long as an LLM key is set (needed for translation).
+
+Stage 2 sends surviving items to an LLM (batched, 1 call per cycle) and
+returns: sentiment (-5..+5), impact (1..5), assets, rationale, and title_en
+(English translation, used for the alert instead of the raw text).
 Provider is picked at import time, first available wins:
-  1. Groq (GROQ_API_KEY)       — free tier, no credit card, llama-3.3-70b
-  2. Anthropic (ANTHROPIC_API_KEY) — paid, Claude Haiku
-  3. none — falls back to Stage-1 keyword-tier alerts only
+  1. Groq (GROQ_API_KEY)           — free tier, no credit card, llama-3.3-70b
+  2. xAI (XAI_API_KEY)             — paid, grok-4-fast
+  3. Anthropic (ANTHROPIC_API_KEY) — paid, Claude Haiku
+  4. none — RSS falls back to Stage-1 keyword-tier alerts; Telegram channels
+     are skipped entirely (no way to translate without an LLM)
 
 Run:  py news_nlp_bot.py
-Deps: py -m pip install requests feedparser apscheduler tzdata
-Env:  GROQ_API_KEY or ANTHROPIC_API_KEY, TG_BOT_TOKEN, TG_CHAT_ID (same bot as okx_spike_screener.py)
+Deps: py -m pip install requests feedparser apscheduler tzdata beautifulsoup4
+Env:  GROQ_API_KEY or XAI_API_KEY or ANTHROPIC_API_KEY, TG_BOT_TOKEN, TG_CHAT_ID
+      (same bot as okx_spike_screener.py)
 """
 
 import hashlib
@@ -30,6 +39,7 @@ from zoneinfo import ZoneInfo
 import feedparser
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
+from bs4 import BeautifulSoup
 
 # ----------------------------------------------------------------------
 # CONFIG
@@ -81,6 +91,15 @@ FEEDS = [
     "https://news.google.com/rss/search?q=bitcoin+ETF+OR+%22CLARITY+act%22+OR+%22strategic+bitcoin+reserve%22&hl=en-US&gl=US&ceid=US:en",
 ]
 
+# Public Telegram channels, scraped via the unauthenticated t.me/s/<channel>
+# web preview (no bot/user login needed for public channels — same trick
+# Telegram itself uses for link-preview embeds). Posts may be in any
+# language; Stage 2 (if an LLM key is set) returns an English translation
+# alongside the score, used for the alert text instead of the raw post.
+TELEGRAM_CHANNELS = [
+    "CryptoMarketAggregator",
+]
+
 # ----------------------------------------------------------------------
 # STAGE 1 — RULE-BASED CLASSIFIER
 # The taxonomy now lives in shared.py (single source of truth), so the RSS
@@ -108,6 +127,41 @@ def news_id(title, link):
 
 
 # ----------------------------------------------------------------------
+# TELEGRAM CHANNEL SCRAPE (public channels, no login required)
+# ----------------------------------------------------------------------
+def fetch_telegram_channel(channel, limit=15):
+    """Scrape the public t.me/s/<channel> preview page. Returns list of
+    (text, link) for the most recent posts. No auth, no session file —
+    works statelessly in CI. Fragile against Telegram markup changes since
+    it's HTML scraping, not an API; fails soft (empty list) on error."""
+    try:
+        r = requests.get(f"https://t.me/s/{channel}", timeout=15,
+                          headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+    except requests.RequestException as e:
+        print(f"[telegram scrape error] {channel}: {e}")
+        return []
+
+    try:
+        soup = BeautifulSoup(r.text, "html.parser")
+    except Exception as e:
+        print(f"[telegram parse error] {channel}: {e}")
+        return []
+
+    posts = []
+    for msg in soup.select("div.tgme_widget_message"):
+        post_id = msg.get("data-post")
+        text_div = msg.select_one("div.tgme_widget_message_text")
+        if not post_id or not text_div:
+            continue
+        text = text_div.get_text("\n", strip=True)
+        if not text:
+            continue
+        posts.append((text, f"https://t.me/{post_id}"))
+    return posts[-limit:]
+
+
+# ----------------------------------------------------------------------
 # STAGE 2 — LLM SCORING (batched, provider-agnostic)
 # ----------------------------------------------------------------------
 def _score_prompt(headlines):
@@ -121,7 +175,8 @@ Respond ONLY with a JSON array, one object per headline, same order:
 [{{"n": 1, "sentiment": -5 to 5 (negative=bearish for BTC/crypto),
 "impact": 1 to 5 (5=market-wide repricing, 1=ignorable),
 "assets": "BTC" or "BTC,ETH,alts" etc,
-"rationale": "one short sentence"}}]
+"rationale": "one short sentence",
+"title_en": "the headline translated to English (verbatim if already English)"}}]
 
 Scoring guide: Fed policy surprises / CPI shocks / major regulation / big hacks = 4-5.
 Routine commentary / minor project news = 1-2. Old or speculative news = lower impact."""
@@ -285,6 +340,28 @@ def cycle():
                  cat or "NOISE", score))
             if cat and score >= 2:
                 candidates.append((nid, cat, title, link, score))
+
+    # Telegram channels aren't gated through the Stage-1 keyword classifier:
+    # its taxonomy is English-only substring matching ("hack", "fed ", ...),
+    # so non-English posts (e.g. Chinese aggregator channels) would almost
+    # never match and would silently produce zero candidates. These channels
+    # are themselves already curated, so every new post is a candidate —
+    # but only when an LLM key is set, since untranslated non-English text
+    # alerted as "unscored keyword tier" wouldn't be useful.
+    if HAVE_LLM:
+        for channel in TELEGRAM_CHANNELS:
+            source = f"telegram:{channel}"
+            for text, link in fetch_telegram_channel(channel):
+                title = text.splitlines()[0][:300]  # DB/alert display title
+                nid = news_id(title, link)
+                if con.execute("SELECT 1 FROM news WHERE id=?", (nid,)).fetchone():
+                    continue
+                con.execute(
+                    "INSERT OR IGNORE INTO news (id, ts, source, title, link, category, base_score) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (nid, datetime.now(tz=WIB).isoformat(), source, title, link,
+                     "TELEGRAM", 3))
+                candidates.append((nid, "TELEGRAM", text, link, 3))
     con.commit()
     print(f"[news_nlp_bot] {len(candidates)} new candidate(s) this cycle "
           f"(seed_run={is_seed_run}, llm_provider={LLM_PROVIDER})")
@@ -310,8 +387,8 @@ def cycle():
                         (s["sentiment"], s["impact"], s.get("assets", "BTC"),
                          s.get("rationale", ""), nid))
             if s["impact"] >= ALERT_THRESHOLD:
-                alert((cat, title, link, s["sentiment"], s["impact"],
-                       s.get("assets", "BTC"), s.get("rationale", "")))
+                alert((cat, s.get("title_en") or title, link, s["sentiment"],
+                       s["impact"], s.get("assets", "BTC"), s.get("rationale", "")))
                 con.execute("UPDATE news SET alerted=1 WHERE id=?", (nid,))
                 fired += 1
     else:

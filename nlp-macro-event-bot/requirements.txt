@@ -3,6 +3,7 @@ requests>=2.31
 feedparser>=6.0
 APScheduler>=3.10
 tzdata>=2024.1          # Windows needs this for zoneinfo
+beautifulsoup4>=4.12    # news_nlp_bot.py: public Telegram channel scrape
 
 # Real-time news layer (feeds_ws.py)
 websockets>=12.0
