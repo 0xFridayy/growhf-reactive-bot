@@ -1,6 +1,6 @@
 {
-  "telegram_bot_token": "8841953338:AAHnsQnUrSIAyDKrDAxH-1IGuRUKBEIFWUA",
-  "telegram_chat_id": "8067721654",
+  "telegram_bot_token": "REPLACE_WITH_YOUR_BOTFATHER_TOKEN",
+  "telegram_chat_id": "REPLACE_WITH_YOUR_CHAT_ID",
   "quote_filter": "USDT",
   "poll_interval_seconds": 15,
   "price_thresholds": {

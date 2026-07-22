@@ -16,18 +16,23 @@ REM Repo root is one level up from this deploy\ folder.
 set SCRIPT_DIR=%~dp0..
 cd /d "%SCRIPT_DIR%"
 
-REM --- Check Python is available -------------------------------------------
+REM --- Check Python is available (python.exe or the py launcher) -----------
+set PYCMD=python
 python --version >nul 2>&1
-if %errorLevel% neq 0 (
-    echo ERROR: Python was not found on PATH.
-    echo Install Python 3.10+ from https://python.org and tick "Add Python to PATH".
-    pause
-    exit /b 1
+if !errorLevel! neq 0 (
+    py --version >nul 2>&1
+    if !errorLevel! neq 0 (
+        echo ERROR: Python was not found on PATH ^(neither "python" nor "py"^).
+        echo Install Python 3.10+ from https://python.org and tick "Add Python to PATH".
+        pause
+        exit /b 1
+    )
+    set PYCMD=py
 )
 
 REM --- Virtual environment + dependencies ----------------------------------
 echo Creating Python virtual environment...
-python -m venv venv
+%PYCMD% -m venv venv
 
 echo Installing dependencies...
 call venv\Scripts\activate.bat
