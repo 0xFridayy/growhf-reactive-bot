@@ -48,6 +48,7 @@ config.local.json
 # (bake in an absolute local path, so they're machine-specific)
 /run_okx_bot.bat
 /run_okx_spike.bat
+/run_okx_orderflow.bat
 /run_bot.bat
 
 # Logs
@@ -57,6 +58,7 @@ logs/
 # Data
 *.csv
 *.db
+*.db-journal
 *.sqlite
 
 # Exception: nlp-macro-event-bot cron persists dedup state across runs by

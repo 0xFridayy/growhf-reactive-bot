@@ -35,13 +35,23 @@ shared bot token.
 In the **repo root** (same folder as the `.py` files), create two `.vbs` files.
 These launch the bots without a visible terminal window.
 
+> **The third argument to `objShell.Run` must be `True` (wait for completion), not `False`.**
+> `False` makes `wscript.exe` fire-and-forget: it launches the bot and exits within
+> a second, so Task Scheduler thinks the task finished immediately and has no way
+> to know the bot is still running. Combined with the 5-minute repeat trigger below,
+> that silently launches a **new duplicate bot every 5 minutes forever** — "Do not
+> start a new instance" never kicks in because Scheduler never sees an instance
+> still running. `True` makes `wscript.exe` block until the bot process exits, so
+> Scheduler correctly shows the task as "Running" the whole time and the
+> concurrency/restart settings actually work.
+
 `run_okx_bot_hidden.vbs`:
 
 ```vbs
 Set objFSO = CreateObject("Scripting.FileSystemObject")
 strPath = objFSO.GetParentFolderName(WScript.ScriptFullName)
 Set objShell = CreateObject("WScript.Shell")
-objShell.Run chr(34) & strPath & "\run_okx_bot.bat" & chr(34), 0, False
+objShell.Run chr(34) & strPath & "\run_okx_bot.bat" & chr(34), 0, True
 ```
 
 `run_okx_spike_hidden.vbs`:
@@ -50,7 +60,17 @@ objShell.Run chr(34) & strPath & "\run_okx_bot.bat" & chr(34), 0, False
 Set objFSO = CreateObject("Scripting.FileSystemObject")
 strPath = objFSO.GetParentFolderName(WScript.ScriptFullName)
 Set objShell = CreateObject("WScript.Shell")
-objShell.Run chr(34) & strPath & "\run_okx_spike.bat" & chr(34), 0, False
+objShell.Run chr(34) & strPath & "\run_okx_spike.bat" & chr(34), 0, True
+```
+
+`run_okx_orderflow_hidden.vbs` (optional third bot — live order-flow logger,
+see `okx_orderflow_logger.py`; silent, no Telegram alerts, logs to `orderflow.db`):
+
+```vbs
+Set objFSO = CreateObject("Scripting.FileSystemObject")
+strPath = objFSO.GetParentFolderName(WScript.ScriptFullName)
+Set objShell = CreateObject("WScript.Shell")
+objShell.Run chr(34) & strPath & "\run_okx_orderflow.bat" & chr(34), 0, True
 ```
 
 ---
