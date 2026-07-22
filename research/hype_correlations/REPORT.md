@@ -92,6 +92,39 @@ weakness. Chasing strength (breakouts, high RSI, longs piling in) had zero or
 negative edge at the daily horizon; the only chase that worked was intraday
 volume-confirmed spikes.
 
+## Entry / take-profit / stop-loss (trade-level study)
+
+`exit_study.py` simulates the top-3 trigger union at trade level on 1h bars:
+46 non-overlapping entries (entry at the 00:00 UTC open after the signal
+close, one position at a time, 10 bp round-trip, SL assumed to fill before TP
+when both are touched in the same hour).
+
+**Excursion profile** (how far trades run before/against you within 72h):
+median trade reaches **+7.5%** favorable and **−3.6%** adverse; 76% of trades
+touch **+5%** within 72h (median time to +5%: ~21h); only 33% ever touch −6%.
+Dip-trigger entries run further both ways (median MFE +11.4%, MAE −5.3%) —
+they enter falling markets.
+
+![mfe mae](results/mfe_mae.png)
+
+**Exit grid** (time stop 24–120h × TP none/5/8/12% × SL none/−4/−6/−8/−10%),
+ranked in-sample only, checked out-of-sample:
+
+| Rule (entry 00:00 UTC after signal) | IS avg/win | OOS avg/win | OOS worst |
+|---|---|---|---|
+| TP +5%, no SL, max 120h | +4.5% / 97% | +3.2% / 81% | −6.0% |
+| TP +5%, SL −6%, max 72h | +2.7% / 80% | +1.9% / 69% | −6.1% |
+| TP +5%, SL −4%, max 48–72h | +2.2% / 70% | +2.3% / 75% | −4.1% |
+| 24h time exit only (original daily backtest) | +1.5% / 63% | +1.7% / 63% | −4.3% |
+
+The +5% take-profit dominates every wider target: HYPE's post-trigger bounce
+is front-loaded, so banking +5% and re-arming beats holding for +8–12%.
+Statistically the no-SL variant scores best (this sample contained no
+catastrophic gap), but that is exactly the tail this 14-month window cannot
+price — use a stop sized to the excursion data (−6% catches only the ~33%
+of trades that were usually failing anyway; −4% is the tight/conservative
+variant with the best OOS Sharpe).
+
 ## Method & honesty notes
 
 - All features are computed at day *t*'s close using only information
