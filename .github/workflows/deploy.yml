@@ -1,0 +1,64 @@
+name: Deploy OKX bot
+
+# Auto-deploys the OKX Telegram bot to the droplet on push to main.
+# Requires these repository secrets (Settings → Secrets and variables → Actions):
+#   DEPLOY_HOST  — droplet IP / hostname
+#   DEPLOY_USER  — SSH user (e.g. root, or a sudo-capable user)
+#   DEPLOY_KEY   — private SSH key authorized on the droplet
+#   DEPLOY_PORT  — optional, defaults to 22
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'okx_tele_bot.py'
+      - 'kelly_sizing.py'
+      - 'okx_perp_screener.py'
+      - 'requirements.txt'
+      - 'config.json'
+      - 'okx-bot.service'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-okx-bot
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      APP_DIR: /opt/okx-bot
+      SERVICE_NAME: okx-bot
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Syntax check
+        run: python -m py_compile okx_tele_bot.py kelly_sizing.py okx_perp_screener.py
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${{ secrets.DEPLOY_PORT || 22 }}" -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy over SSH
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+              -p "${{ secrets.DEPLOY_PORT || 22 }}" \
+              "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+              "set -e; \
+               cd \"$APP_DIR\"; \
+               sudo -u okxbot git fetch --all --prune; \
+               sudo -u okxbot git reset --hard origin/main; \
+               sudo -u okxbot ./venv/bin/pip install -q -r requirements.txt; \
+               sudo install -m 644 okx-bot.service /etc/systemd/system/${SERVICE_NAME}.service; \
+               sudo systemctl daemon-reload; \
+               sudo systemctl restart ${SERVICE_NAME}; \
+               sudo systemctl is-active ${SERVICE_NAME}"
+
+      - name: Report
+        if: always()
+        run: echo "Deploy finished with status ${{ job.status }}"

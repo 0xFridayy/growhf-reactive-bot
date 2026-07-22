@@ -1,0 +1,29 @@
+[Unit]
+Description=OKX Telegram Bot (OI-flip / funding-flip alerts + on-demand analysis)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=okxbot
+Group=okxbot
+WorkingDirectory=/opt/okx-bot
+Environment="PATH=/opt/okx-bot/venv/bin"
+ExecStart=/opt/okx-bot/venv/bin/python okx_tele_bot.py
+Restart=always
+RestartSec=10
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/okx-bot
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=okx-bot
+
+[Install]
+WantedBy=multi-user.target

@@ -29,7 +29,7 @@ jobs:
 
     - name: Lint with flake8
       run: |
-        flake8 growhf_reactive_bot.py okx_perp_screener.py --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 growhf_reactive_bot.py okx_perp_screener.py okx_tele_bot.py --count --select=E9,F63,F7,F82 --show-source --statistics
 
     - name: Dry-run config validation
       run: |

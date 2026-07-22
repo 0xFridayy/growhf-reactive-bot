@@ -9,6 +9,15 @@
   },
   "volume_spike_multiplier": 3.0,
   "cooldown_seconds": 900,
+  "oi_funding": {
+    "enabled": true,
+    "scan_interval_seconds": 300,
+    "universe_top_n": 40,
+    "oi_change_threshold_pct": 5.0,
+    "price_change_threshold_pct": 0.5,
+    "funding_flip_min_abs": 0.0001,
+    "cooldown_seconds": 3600
+  },
   "sizing": {
     "enabled": true,
     "account_equity_usd": 280.0,
