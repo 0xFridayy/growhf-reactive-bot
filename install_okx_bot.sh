@@ -20,7 +20,11 @@ APP_USER="${APP_USER:-okxbot}"
 APP_DIR="${APP_DIR:-/opt/okx-bot}"
 REPO_URL="${REPO_URL:-https://github.com/0xfridayy/growhf-reactive-bot.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
-SERVICE_NAME="okx-bot"
+# Two services, one bot: the Telegram bot (commands + OI/funding flips) and the
+# reactive spike screener. Both share this venv + config.json; only the Telegram
+# bot polls getUpdates, so there's no getUpdates conflict on the shared token.
+SERVICES=("okx-bot" "okx-spike")
+SERVICE_UNITS=("okx-bot.service" "okx-spike.service")
 
 log()  { printf '\033[1;32m[install]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
@@ -107,20 +111,31 @@ else
 fi
 
 # --------------------------------------------------------------------------- #
-# 7. systemd unit
+# 7. systemd units (Telegram bot + spike screener)
 # --------------------------------------------------------------------------- #
-log "Installing systemd unit..."
-install -m 644 "${APP_DIR}/okx-bot.service" "/etc/systemd/system/${SERVICE_NAME}.service"
+log "Installing systemd units..."
+for unit in "${SERVICE_UNITS[@]}"; do
+    install -m 644 "${APP_DIR}/${unit}" "/etc/systemd/system/${unit}"
+done
 systemctl daemon-reload
-systemctl enable "${SERVICE_NAME}"
+for svc in "${SERVICES[@]}"; do
+    systemctl enable "$svc"
+done
 
 if grep -q "PUT_YOUR" "${APP_DIR}/config.json" 2>/dev/null; then
-    warn "Not starting service yet — fill in config.json, then: systemctl start ${SERVICE_NAME}"
+    warn "Not starting services yet — fill in config.json, then:"
+    for svc in "${SERVICES[@]}"; do
+        echo "    systemctl start ${svc}"
+    done
 else
-    log "Starting ${SERVICE_NAME}..."
-    systemctl restart "${SERVICE_NAME}"
+    for svc in "${SERVICES[@]}"; do
+        log "Starting ${svc}..."
+        systemctl restart "$svc"
+    done
 fi
 
 log "Done. Useful commands:"
-echo "    systemctl status ${SERVICE_NAME}"
-echo "    journalctl -u ${SERVICE_NAME} -f"
+for svc in "${SERVICES[@]}"; do
+    echo "    systemctl status ${svc}"
+    echo "    journalctl -u ${svc} -f"
+done

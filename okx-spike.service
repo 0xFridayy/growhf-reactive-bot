@@ -1,0 +1,29 @@
+[Unit]
+Description=OKX Reactive Spike Screener (price + volume spike alerts)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=okxbot
+Group=okxbot
+WorkingDirectory=/opt/okx-bot
+Environment="PATH=/opt/okx-bot/venv/bin"
+ExecStart=/opt/okx-bot/venv/bin/python okx_perp_screener.py
+Restart=always
+RestartSec=10
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/okx-bot
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=okx-spike
+
+[Install]
+WantedBy=multi-user.target

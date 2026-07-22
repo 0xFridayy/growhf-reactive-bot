@@ -13,10 +13,12 @@ on:
     paths:
       - 'okx_tele_bot.py'
       - 'kelly_sizing.py'
+      - 'market_profile.py'
       - 'okx_perp_screener.py'
       - 'requirements.txt'
       - 'config.json'
       - 'okx-bot.service'
+      - 'okx-spike.service'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
@@ -29,13 +31,12 @@ jobs:
     runs-on: ubuntu-latest
     env:
       APP_DIR: /opt/okx-bot
-      SERVICE_NAME: okx-bot
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Syntax check
-        run: python -m py_compile okx_tele_bot.py kelly_sizing.py okx_perp_screener.py
+        run: python -m py_compile okx_tele_bot.py kelly_sizing.py market_profile.py okx_perp_screener.py
 
       - name: Set up SSH
         run: |
@@ -54,10 +55,11 @@ jobs:
                sudo -u okxbot git fetch --all --prune; \
                sudo -u okxbot git reset --hard origin/main; \
                sudo -u okxbot ./venv/bin/pip install -q -r requirements.txt; \
-               sudo install -m 644 okx-bot.service /etc/systemd/system/${SERVICE_NAME}.service; \
+               sudo install -m 644 okx-bot.service /etc/systemd/system/okx-bot.service; \
+               sudo install -m 644 okx-spike.service /etc/systemd/system/okx-spike.service; \
                sudo systemctl daemon-reload; \
-               sudo systemctl restart ${SERVICE_NAME}; \
-               sudo systemctl is-active ${SERVICE_NAME}"
+               sudo systemctl restart okx-bot okx-spike; \
+               sudo systemctl is-active okx-bot okx-spike"
 
       - name: Report
         if: always()
