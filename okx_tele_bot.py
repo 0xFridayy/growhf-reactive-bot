@@ -26,6 +26,7 @@ from pathlib import Path
 import requests
 
 from kelly_sizing import SizingConfig, size_position
+from market_profile import build_tpo_profile, mean_reversion, regime
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
 OKX_BASE = "https://www.okx.com"
@@ -211,7 +212,12 @@ def analyze(inst_id, quote_filter, sizing_cfg=None):
 
     funding = fetch_funding(inst_id)
 
-    # Scoring: momentum + funding (contrarian) + volume conviction.
+    # Market-profile analytics (TPO POC/VAH/VAL, mean reversion, regime).
+    prof = build_tpo_profile(candles) if candles else None
+    mr = mean_reversion(candles) if candles else None
+    reg = regime(candles) if candles else None
+
+    # Scoring: momentum + funding (contrarian) + volume + regime-aware fade.
     score = 0.0
     reasons = []
     if chg1h > 1.0:
@@ -240,6 +246,16 @@ def analyze(inst_id, quote_filter, sizing_cfg=None):
     if vol_ratio >= 3.0:
         reasons.append(f"volume {vol_ratio:.1f}x avg")
 
+    # Regime decides which playbook drives the verdict. In a range, fade the
+    # extremes back toward POC; in a trend, let momentum carry the score.
+    if reg is not None and reg.favored == "mean-reversion" and mr is not None and prof is not None:
+        if mr.signal == "fade-short" or last > prof.vah:
+            score -= 2
+            reasons.append("range regime: price stretched high → fade toward POC")
+        elif mr.signal == "fade-long" or last < prof.val:
+            score += 2
+            reasons.append("range regime: price stretched low → fade toward POC")
+
     if score >= 2:
         verdict = "\U0001F7E2 LONG bias"
     elif score <= -2:
@@ -255,6 +271,28 @@ def analyze(inst_id, quote_filter, sizing_cfg=None):
     ]
     if funding is not None:
         lines.append(f"Funding {funding * 100:+.4f}% / 8h")
+
+    if reg is not None:
+        lines.append(f"\n\U0001F9ED <b>Regime:</b> {reg.label} — favours {reg.favored}")
+
+    if prof is not None:
+        loc = "inside value" if prof.in_value_area else (
+            "above value (premium)" if last > prof.vah else "below value (discount)"
+        )
+        lines.append(
+            f"\n\U0001F4CA <b>TPO profile (24h)</b>\n"
+            f"POC {prof.poc:.6g} ({prof.poc_dist_pct:+.2f}%) | "
+            f"VAH {prof.vah:.6g} | VAL {prof.val:.6g}\n"
+            f"Price is {loc} [{prof.value_area_pct:.0f}% VA]"
+        )
+
+    if mr is not None:
+        lines.append(
+            f"\n\U0001F501 <b>Mean reversion</b>\n"
+            f"Mean {mr.mean:.6g} | ±2σ [{mr.lower:.6g}, {mr.upper:.6g}]\n"
+            f"{mr.note}"
+        )
+
     lines.append(f"\n<b>Verdict:</b> {verdict}")
     if reasons:
         lines.append("• " + "\n• ".join(reasons))
@@ -317,6 +355,8 @@ def handle_command(text, cfg):
             "\U0001F916 <b>OKX Telegram bot</b>\n"
             "Commands:\n"
             "• <code>/analyze BTC</code> — full read + verdict (or just send <code>btc</code>)\n"
+            "  includes TPO profile (POC/VAH/VAL), mean-reversion z-score, and regime\n"
+            "• <code>/profile BTC</code> / <code>/regime BTC</code> — same full read\n"
             "• <code>/status</code> — what I'm watching\n"
             "• <code>/help</code> — this message\n\n"
             "I also push OI-flip and funding-flip alerts automatically."
@@ -331,11 +371,13 @@ def handle_command(text, cfg):
             f"Quote filter: {quote_filter}"
         )
 
-    target = parts[1] if cmd == "analyze" and len(parts) > 1 else (
-        parts[0] if cmd not in ("analyze",) else None
-    )
-    if cmd == "analyze" and len(parts) < 2:
-        return "Usage: <code>/analyze BTC</code>"
+    named_cmds = ("analyze", "profile", "regime")
+    if cmd in named_cmds:
+        if len(parts) < 2:
+            return f"Usage: <code>/{cmd} BTC</code>"
+        target = parts[1]
+    else:
+        target = parts[0]
     if target is None:
         return None
 
