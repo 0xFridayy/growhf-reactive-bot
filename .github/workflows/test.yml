@@ -33,4 +33,4 @@ jobs:
 
     - name: Dry-run config validation
       run: |
-        python -c "import json; json.load(open('config.json'))"
+        python -c "import json; json.load(open('config.example.json'))"
