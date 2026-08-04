@@ -33,7 +33,7 @@ import os
 import sqlite3
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import feedparser
@@ -66,13 +66,30 @@ LLM_PROVIDER   = ("groq" if HAVE_GROQ else
                    "anthropic" if HAVE_ANTHROPIC else "none")
 
 WIB = ZoneInfo("Asia/Jakarta")
-DB  = "news_nlp.db"
+# Absolute so the dedup history follows the script rather than the working
+# directory — a scheduled run from a different cwd would otherwise create a
+# second, empty DB and re-alert everything it had already sent.
+DB = os.environ.get("NEWS_DB") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "news_nlp.db")
 
-ALERT_THRESHOLD = 3                  # send Telegram alert if impact >= this
-KEYWORD_ALERT_THRESHOLD = 3          # fallback alert gate when no LLM key
+# Alert gate. impact is 1..5 where 5 = market-wide repricing and 1 = ignorable,
+# so a threshold of 3 was alerting on "routine news" — it let through the ETF /
+# regulation filler that made the feed unreadable. 4 means "this should move a
+# position", which is the only kind of headline worth interrupting a swing trader.
+ALERT_THRESHOLD = int(os.environ.get("NEWS_ALERT_IMPACT", "4"))
+KEYWORD_ALERT_THRESHOLD = 4          # fallback alert gate when no LLM key
 MAX_LLM_HEADLINES_PER_CYCLE = 10     # cost guard
-MAX_KEYWORD_ALERTS_PER_CYCLE = 3     # fallback alert cap (per category, highest score)
+MAX_KEYWORD_ALERTS_PER_CYCLE = 2     # fallback alert cap (per category, highest score)
 POLL_SECONDS = 60
+
+# Semantic dedup. The id is sha256(title+link), so the SAME story filed by two
+# outlets under two wordings ("BlackRock debuts tokenized access to $311 billion
+# of money market funds" vs "BlackRock debuts tokenized share classes for select
+# European money market funds with $311 billion in assets") hashes differently
+# and both fired. Stage 2 now also returns a story_key — a slug for the
+# underlying EVENT — and only the first headline per story_key gets alerted.
+STORY_DEDUP_HOURS = int(os.environ.get("NEWS_STORY_DEDUP_HOURS", "12"))
+MAX_ALERTS_PER_DAY = int(os.environ.get("NEWS_MAX_ALERTS_PER_DAY", "8"))
 
 print(f"[news_nlp_bot] Stage 2 provider: {LLM_PROVIDER}"
       + ("" if HAVE_LLM else " — alerting on Stage-1 keyword score only."))
@@ -118,8 +135,29 @@ def db_init():
         category TEXT, base_score INTEGER,
         sentiment INTEGER, impact INTEGER, assets TEXT, rationale TEXT,
         alerted INTEGER DEFAULT 0)""")
+    # story_key was added after the table shipped, so migrate in place rather
+    # than forcing a rebuild that would drop the dedup history.
+    cols = {r[1] for r in con.execute("PRAGMA table_info(news)")}
+    if "story_key" not in cols:
+        con.execute("ALTER TABLE news ADD COLUMN story_key TEXT")
+        print("[news_nlp_bot] migrated: added news.story_key")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_news_story ON news(story_key, ts)")
     con.commit()
     return con
+
+
+def recent_story_keys(con, hours):
+    """story_keys already ALERTED inside the window — the semantic dedup set."""
+    cutoff = (datetime.now(tz=WIB) - timedelta(hours=hours)).isoformat()
+    return {r[0] for r in con.execute(
+        "SELECT story_key FROM news WHERE alerted=1 AND story_key IS NOT NULL AND ts > ?",
+        (cutoff,)) if r[0]}
+
+
+def alerts_today(con):
+    today = datetime.now(tz=WIB).date().isoformat()
+    return con.execute("SELECT COUNT(*) FROM news WHERE alerted=1 AND ts >= ?",
+                       (today,)).fetchone()[0]
 
 
 def news_id(title, link):
@@ -176,10 +214,23 @@ Respond ONLY with a JSON array, one object per headline, same order:
 "impact": 1 to 5 (5=market-wide repricing, 1=ignorable),
 "assets": "BTC" or "BTC,ETH,alts" etc,
 "rationale": "one short sentence",
+"story_key": "short-lowercase-slug of the underlying EVENT",
 "title_en": "the headline translated to English (verbatim if already English)"}}]
 
-Scoring guide: Fed policy surprises / CPI shocks / major regulation / big hacks = 4-5.
-Routine commentary / minor project news = 1-2. Old or speculative news = lower impact."""
+Scoring guide — the reader is a swing trader holding perps for days, so score by
+whether this changes a POSITION, not by whether it is interesting:
+  5 = market-wide repricing (FOMC/CPI surprise, major exchange insolvency or hack,
+      landmark law actually passing)
+  4 = a real directional catalyst a trader should act on
+  3 = context worth knowing, not worth an interruption
+  1-2 = routine commentary, product launches, partnerships, price-prediction
+      pieces, "X could hit $Y", recycled or speculative news
+Anything phrased as a question, a forecast, or an opinion column is at most 2.
+
+story_key rule: two headlines describing the SAME underlying event MUST get the
+IDENTICAL story_key, even when the wording, outlet, or numbers differ. Use the
+actor + action, e.g. "blackrock-tokenized-mmf-europe", "clarity-act-senate-vote".
+Do not put the outlet name or the headline's exact phrasing in the slug."""
 
 
 def _parse_score_response(text, headlines):
@@ -271,26 +322,24 @@ def btc_price():
         return ""
 
 
-def bias_and_power(sent, impact):
-    """Turn raw (sentiment -5..5, impact 1..5) into a trader-readable
-    direction + a single 0-10 conviction score (magnitude + impact,
-    both capped 0-5, so the sum naturally lands in 0-10)."""
+def bias_of(sent):
+    """Direction only. The old 'power N/10' was |sentiment| + impact, so an
+    impact-3 item with mild sentiment scored 6/10 and read as conviction when it
+    was really the alert floor wearing a costume. Impact and sentiment are now
+    shown as themselves."""
     if sent > 0:
-        bias, emoji = "LONG", "📈"
-    elif sent < 0:
-        bias, emoji = "SHORT", "📉"
-    else:
-        bias, emoji = "NEUTRAL", "⚪"
-    power = min(10, abs(sent) + impact)
-    return bias, emoji, power
+        return "LONG", "📈"
+    if sent < 0:
+        return "SHORT", "📉"
+    return "NEUTRAL", "⚪"
 
 
 def alert(row):
     cat, title, link, sent, impact, assets, rationale = row
-    bias, emoji, power = bias_and_power(sent, impact)
-    fire = "🚨" * max(1, impact - 2)
-    send(f"{fire} <b>[{cat}]</b>\n"
-         f"{emoji} <b>{bias}</b> | power {power}/10 | {assets}\n\n"
+    bias, emoji = bias_of(sent)
+    fire = "🚨🚨" if impact >= 5 else "🚨"
+    send(f"{fire} <b>[{cat}]</b> impact {impact}/5\n"
+         f"{emoji} <b>{bias}</b> (sentiment {sent:+d}) | {assets}\n\n"
          f"<b>{title}</b>\n{rationale}\n\n"
          f"{btc_price()}\n<a href='{link}'>source</a>")
 
@@ -379,18 +428,37 @@ def cycle():
     fired = 0
     if HAVE_LLM:
         scores = llm_score([(c[0], c[1], c[2]) for c in batch])
+        # Stories already alerted in the dedup window, plus the ones fired in
+        # THIS batch — two wordings of one event usually arrive in the same
+        # cycle, so an in-memory set is what actually catches the screenshot case.
+        seen_stories = recent_story_keys(con, STORY_DEDUP_HOURS)
+        budget = MAX_ALERTS_PER_DAY - alerts_today(con)
         for nid, cat, title, link, _ in batch:
             s = scores.get(nid)
             if not s:
                 continue
-            con.execute("UPDATE news SET sentiment=?, impact=?, assets=?, rationale=? WHERE id=?",
-                        (s["sentiment"], s["impact"], s.get("assets", "BTC"),
-                         s.get("rationale", ""), nid))
-            if s["impact"] >= ALERT_THRESHOLD:
-                alert((cat, s.get("title_en") or title, link, s["sentiment"],
-                       s["impact"], s.get("assets", "BTC"), s.get("rationale", "")))
-                con.execute("UPDATE news SET alerted=1 WHERE id=?", (nid,))
-                fired += 1
+            impact = int(s.get("impact", 0))
+            skey = (s.get("story_key") or "").strip().lower() or None
+            con.execute("UPDATE news SET sentiment=?, impact=?, assets=?, rationale=?, "
+                        "story_key=? WHERE id=?",
+                        (s["sentiment"], impact, s.get("assets", "BTC"),
+                         s.get("rationale", ""), skey, nid))
+            if impact < ALERT_THRESHOLD:
+                continue
+            if skey and skey in seen_stories:
+                print(f"[news_nlp_bot] deduped '{title[:60]}' -> story '{skey}'")
+                continue
+            if budget <= 0:
+                print(f"[news_nlp_bot] daily cap {MAX_ALERTS_PER_DAY} reached — "
+                      f"suppressing '{title[:60]}'")
+                continue
+            alert((cat, s.get("title_en") or title, link, s["sentiment"],
+                   impact, s.get("assets", "BTC"), s.get("rationale", "")))
+            con.execute("UPDATE news SET alerted=1 WHERE id=?", (nid,))
+            if skey:
+                seen_stories.add(skey)
+            budget -= 1
+            fired += 1
     else:
         # No sentiment/impact to write — market_risk_state() only reads rows
         # with impact set, so these are honestly excluded from that aggregate.
