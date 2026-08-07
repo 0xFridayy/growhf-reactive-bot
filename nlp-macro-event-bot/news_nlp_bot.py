@@ -91,6 +91,31 @@ POLL_SECONDS = 60
 STORY_DEDUP_HOURS = int(os.environ.get("NEWS_STORY_DEDUP_HOURS", "12"))
 MAX_ALERTS_PER_DAY = int(os.environ.get("NEWS_MAX_ALERTS_PER_DAY", "8"))
 
+# ---------------------------------------------------------------------------
+# WHAT IS WORTH AN ALERT (measured on 1379 scored items over 18 days)
+# ---------------------------------------------------------------------------
+# Two independent filters, because impact and direction are different things and
+# only the pair is tradeable:
+#
+#   CATEGORY — a swing trader on perps is positioned on macro, not on product
+#   announcements. Fed / inflation (CPI, PPI, PCE) / jobs move the whole risk
+#   complex; ETF flow stories, listings and corporate news do not move it in a
+#   direction you can hold for days. ETF_FLOWS is deliberately NOT in this set.
+#
+#   DIRECTION — 26 of the 242 impact>=4 items scored sentiment 0: genuinely
+#   big news with no directional read. Those are the worst kind of alert, since
+#   they demand attention and imply no trade. Requiring |sentiment| >= 3 drops
+#   them along with the merely-mildly-slanted.
+#
+# Measured alert rates per day on the same data:
+#   impact>=3 (original)                  31.4/day
+#   impact>=4                             13.4/day
+#   impact>=4 + |sentiment|>=3             7.1/day
+#   MACRO + impact>=4 + |sentiment|>=3     1.2/day   <- this configuration
+ALERT_CATEGORIES = {c.strip().upper() for c in os.environ.get(
+    "NEWS_CATEGORIES", "FED,INFLATION,JOBS,GEO").split(",") if c.strip()}
+MIN_ABS_SENTIMENT = int(os.environ.get("NEWS_MIN_ABS_SENTIMENT", "3"))
+
 print(f"[news_nlp_bot] Stage 2 provider: {LLM_PROVIDER}"
       + ("" if HAVE_LLM else " — alerting on Stage-1 keyword score only."))
 
@@ -103,9 +128,14 @@ FEEDS = [
     # Macro / Fed
     "https://www.federalreserve.gov/feeds/press_all.xml",
     "https://www.forexlive.com/feed/news",
-    # Google News queries (near-realtime aggregation)
+    # Google News queries (near-realtime aggregation). These are aimed at the
+    # categories that actually clear ALERT_CATEGORIES — there is no point paying
+    # to fetch and LLM-score stories the macro filter will discard. The old
+    # "bitcoin ETF OR CLARITY act" query was doing exactly that: every item it
+    # returned classified as ETF_FLOWS or REGULATION and was then dropped.
     "https://news.google.com/rss/search?q=%22federal+reserve%22+OR+%22kevin+warsh%22&hl=en-US&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=bitcoin+ETF+OR+%22CLARITY+act%22+OR+%22strategic+bitcoin+reserve%22&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=CPI+OR+inflation+OR+PPI+OR+%22core+PCE%22&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=FOMC+OR+%22rate+decision%22+OR+%22nonfarm+payrolls%22+OR+%22jobs+report%22&hl=en-US&gl=US&ceid=US:en",
 ]
 
 # Public Telegram channels, scraped via the unauthenticated t.me/s/<channel>
@@ -337,9 +367,11 @@ def bias_of(sent):
 def alert(row):
     cat, title, link, sent, impact, assets, rationale = row
     bias, emoji = bias_of(sent)
-    fire = "🚨🚨" if impact >= 5 else "🚨"
-    send(f"{fire} <b>[{cat}]</b> impact {impact}/5\n"
-         f"{emoji} <b>{bias}</b> (sentiment {sent:+d}) | {assets}\n\n"
+    # Direction first: this only fires on macro with a strong directional read,
+    # so the bias IS the message and the headline is the supporting evidence.
+    strength = "STRONG" if abs(sent) >= 4 else "CLEAR"
+    send(f"{emoji} <b>MACRO {bias}</b> — {strength} bias\n"
+         f"[{cat}] impact {impact}/5 · sentiment {sent:+d} · {assets}\n\n"
          f"<b>{title}</b>\n{rationale}\n\n"
          f"{btc_price()}\n<a href='{link}'>source</a>")
 
@@ -444,6 +476,15 @@ def cycle():
                         (s["sentiment"], impact, s.get("assets", "BTC"),
                          s.get("rationale", ""), skey, nid))
             if impact < ALERT_THRESHOLD:
+                continue
+            if ALERT_CATEGORIES and cat.upper() not in ALERT_CATEGORIES:
+                print(f"[news_nlp_bot] skipped [{cat}] (not a macro category): "
+                      f"{title[:60]}")
+                continue
+            if abs(int(s.get("sentiment", 0))) < MIN_ABS_SENTIMENT:
+                # High impact but no directional read — nothing to act on.
+                print(f"[news_nlp_bot] skipped (sentiment {s.get('sentiment')} "
+                      f"too weak to trade): {title[:60]}")
                 continue
             if skey and skey in seen_stories:
                 print(f"[news_nlp_bot] deduped '{title[:60]}' -> story '{skey}'")
