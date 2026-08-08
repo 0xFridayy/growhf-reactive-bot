@@ -16,7 +16,7 @@ on:
       - 'market_profile.py'
       - 'okx_perp_screener.py'
       - 'requirements.txt'
-      - 'config.json'
+      - 'config.example.json'
       - 'okx-bot.service'
       - 'okx-spike.service'
       - '.github/workflows/deploy.yml'

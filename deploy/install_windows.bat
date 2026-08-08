@@ -18,10 +18,13 @@ if %errorLevel% neq 0 (
 REM Get the directory where this script is located
 set SCRIPT_DIR=%~dp0..
 
-REM Create venv
+REM Create venv (use "py" launcher if "python" isn't on PATH)
 echo Creating Python virtual environment...
 cd /d "%SCRIPT_DIR%"
-python -m venv venv
+set PYCMD=python
+python --version >nul 2>&1
+if !errorLevel! neq 0 set PYCMD=py
+%PYCMD% -m venv venv
 
 REM Activate venv and install deps
 echo Installing dependencies...
