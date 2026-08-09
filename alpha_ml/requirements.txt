@@ -1,0 +1,16 @@
+# alpha_ml — phase 1 (XGBoost) + phase 2 (DDQN) research pipeline.
+# Deliberately kept OUT of the root requirements.txt: the live Telegram bots
+# (okx_tele_bot.py, growhf_reactive_bot.py) only ever read alpha_ml/status.py
+# (stdlib only) for /alpha_status, so they never need torch/xgboost installed.
+# Install these only where you actually run alpha_ml/train.py.
+
+numpy>=1.26
+pandas>=2.1
+scikit-learn>=1.4
+xgboost>=2.0
+
+# CPU-only PyTorch (DDQN). The default `pip install torch` can pull a much
+# larger CUDA build depending on your index/platform — on a small VPS with no
+# GPU, prefer the CPU wheel explicitly:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.2
