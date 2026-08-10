@@ -71,7 +71,12 @@ logs/
 # cached OHLCV, backtest status); not source, not meant to be committed.
 alpha_ml/models/
 alpha_ml/data/*.csv
-alpha_ml/alpha_status.json
+
+# Exception: training runs on GitHub Actions, so the status snapshot has to be
+# committed back or the local bot's /alpha_status would never see the result.
+# Both are small text files (KB), unlike models/ and the cached OHLCV.
+!alpha_ml/alpha_status.json
+!alpha_ml/alpha_status_history.csv
 
 # macOS
 .DS_Store
