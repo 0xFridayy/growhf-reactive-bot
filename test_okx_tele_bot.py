@@ -10,19 +10,28 @@ Tests cover the high-risk gaps:
 """
 
 import json
-import pytest
-from unittest.mock import Mock, patch, MagicMock
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock, patch, MagicMock
+
+import pytest
 
 # Import the bot modules
 from okx_tele_bot import (
     direction,
     pct_change,
     resolve_inst_id,
+    analyze_macro,
+    handle_command,
     FlipScanner,
     REGIME_LABELS,
+    regime_bias,
 )
+from okx_perp_screener import spike_has_edge
+import macro_feeds
+from macro_feeds import resolve_macro
 from market_profile import (
+    build_tpo,
     build_tpo_profile,
     mean_reversion,
     regime,
@@ -96,133 +105,48 @@ class TestResolveInstId:
         assert resolve_inst_id("  btc  ", "USDT") == "BTC-USDT-SWAP"
 
 
+# OI-flip tests removed because OI-flip alerts are deleted from the bot.
+
+
 # --------------------------------------------------------------------------- #
-# Test FlipScanner OI-flip logic
+# Test OI-flip bias mapping
 # --------------------------------------------------------------------------- #
-class TestFlipScannerOIFlip:
-    @pytest.fixture
-    def scanner(self):
-        """Create a FlipScanner with test config."""
-        cfg = {
-            "telegram_bot_token": "test-token",
-            "telegram_chat_id": "123",
-            "quote_filter": "USDT",
-            "oi_funding": {
-                "enabled": True,
-                "scan_interval_seconds": 300,
-                "universe_top_n": 40,
-                "oi_change_threshold_pct": 5.0,
-                "price_change_threshold_pct": 0.5,
-                "funding_flip_min_abs": 0.0001,
-                "cooldown_seconds": 3600,
-            },
-        }
-        return FlipScanner(cfg)
+class TestOIFlipBias:
+    def test_regime_bias_is_long_for_longs_building(self):
+        assert regime_bias("🟢 longs building") == "long"
 
-    def test_oi_flip_longs_building(self, scanner):
-        """Price up + OI up → longs building (bullish)."""
-        scanner.prev_price["BTC-USDT"] = 50000
-        scanner.prev_oi["BTC-USDT"] = 1000000
+    def test_regime_bias_is_short_for_shorts_building(self):
+        assert regime_bias("🔴 shorts building") == "short"
 
-        with patch("okx_tele_bot.tg_send") as mock_send:
-            scanner._check_oi_flip(
-                "BTC-USDT", 50100, 1050000, 0, "token", "chat_id"
-            )
-            # Should detect regime: price +0.2%, OI +5% → (up, up) → longs building
-            assert scanner.prev_regime["BTC-USDT"] == "🟢 longs building"
-            assert mock_send.called
+    def test_regime_bias_is_neutral_for_weak_flips(self):
+        assert regime_bias("🟡 short covering") == "neutral"
+        assert regime_bias("🟠 long unwind") == "neutral"
 
-    def test_oi_flip_short_covering(self, scanner):
-        """Price up + OI down → short covering (weak bull, not fresh demand)."""
-        scanner.prev_price["BTC-USDT"] = 50000
-        scanner.prev_oi["BTC-USDT"] = 1000000
 
-        with patch("okx_tele_bot.tg_send") as mock_send:
-            scanner._check_oi_flip(
-                "BTC-USDT", 50100, 950000, 0, "token", "chat_id"
-            )
-            # Price +0.2%, OI -5% → (up, down) → short covering
-            assert scanner.prev_regime["BTC-USDT"] == "🟡 short covering"
-            assert mock_send.called
+class TestPerpScreenerEdgeFilter:
+    def test_spike_has_edge_requires_cvd_confirmed_up_for_long(self):
+        mock_cc = Mock()
+        mock_cc.fetch_cvd.return_value = [{"ts": 1, "delta": 1.0, "cvd": 1.0}]
+        mock_cc.resample_to_candles.return_value = [1.0]
+        mock_cc.cvd_read.return_value = ("confirmed up", "")
+        mock_cc.causal_pivots.return_value = ([], [])
+        mock_cc.structure_state.return_value = Mock(state="uptrend")
 
-    def test_oi_flip_shorts_building(self, scanner):
-        """Price down + OI up → shorts building (bearish)."""
-        scanner.prev_price["BTC-USDT"] = 50000
-        scanner.prev_oi["BTC-USDT"] = 1000000
+        with patch.dict("sys.modules", {"chart_command": mock_cc}):
+            candles = [[1, 1, 2, 0.5, 1.5, 100]]
+            assert spike_has_edge("BTC-USDT", candles, "long") is True
 
-        with patch("okx_tele_bot.tg_send") as mock_send:
-            scanner._check_oi_flip(
-                "BTC-USDT", 49900, 1050000, 0, "token", "chat_id"
-            )
-            # Price -0.2%, OI +5% → (down, up) → shorts building
-            assert scanner.prev_regime["BTC-USDT"] == "🔴 shorts building"
-            assert mock_send.called
+    def test_spike_has_edge_rejects_no_edge_for_short(self):
+        mock_cc = Mock()
+        mock_cc.fetch_cvd.return_value = [{"ts": 1, "delta": -1.0, "cvd": -1.0}]
+        mock_cc.resample_to_candles.return_value = [-1.0]
+        mock_cc.cvd_read.return_value = ("divergent", "")
+        mock_cc.causal_pivots.return_value = ([], [])
+        mock_cc.structure_state.return_value = Mock(state="downtrend")
 
-    def test_oi_flip_long_unwind(self, scanner):
-        """Price down + OI down → long unwind (weak bear, deleveraging)."""
-        scanner.prev_price["BTC-USDT"] = 50000
-        scanner.prev_oi["BTC-USDT"] = 1000000
-
-        with patch("okx_tele_bot.tg_send") as mock_send:
-            scanner._check_oi_flip(
-                "BTC-USDT", 49900, 950000, 0, "token", "chat_id"
-            )
-            # Price -0.2%, OI -5% → (down, down) → long unwind
-            assert scanner.prev_regime["BTC-USDT"] == "🟠 long unwind"
-            assert mock_send.called
-
-    def test_no_flip_same_regime(self, scanner):
-        """No alert when regime doesn't change."""
-        scanner.prev_price["BTC-USDT"] = 50000
-        scanner.prev_oi["BTC-USDT"] = 1000000
-        scanner.prev_regime["BTC-USDT"] = "🟢 longs building"
-
-        with patch("okx_tele_bot.tg_send") as mock_send:
-            scanner._check_oi_flip(
-                "BTC-USDT", 50100, 1050000, 0, "token", "chat_id"
-            )
-            # Regime stays the same → no alert
-            assert not mock_send.called
-
-    def test_first_scan_no_alert(self, scanner):
-        """No alert on first scan (prev_oi/price are None)."""
-        with patch("okx_tele_bot.tg_send") as mock_send:
-            scanner._check_oi_flip(
-                "BTC-USDT", 50000, 1000000, 0, "token", "chat_id"
-            )
-            # prev_oi is None → return early
-            assert not mock_send.called
-            assert "BTC-USDT" not in scanner.prev_regime
-
-    def test_cooldown_suppresses_alert(self, scanner):
-        """Alert cooldown should prevent spam."""
-        import time
-
-        scanner.prev_price["BTC-USDT"] = 50000
-        scanner.prev_oi["BTC-USDT"] = 1000000
-        scanner.prev_regime["BTC-USDT"] = "🟡 short covering"
-        now = time.time()
-        scanner.last_alert["BTC-USDT"] = now - 1800  # 30 min ago (cooldown=3600)
-
-        with patch("okx_tele_bot.tg_send") as mock_send:
-            scanner._check_oi_flip(
-                "BTC-USDT", 50100, 1050000, now, "token", "chat_id"
-            )
-            # Still in cooldown → no alert sent
-            assert not mock_send.called
-
-    def test_neutral_regime_no_alert(self, scanner):
-        """Neutral regimes (flat price or OI) should not trigger alert."""
-        scanner.prev_price["BTC-USDT"] = 50000
-        scanner.prev_oi["BTC-USDT"] = 1000000
-        scanner.prev_regime["BTC-USDT"] = "⚖️ price up, OI flat"
-
-        with patch("okx_tele_bot.tg_send") as mock_send:
-            scanner._check_oi_flip(
-                "BTC-USDT", 50000.1, 1000000, 0, "token", "chat_id"
-            )
-            # Neutral tone → no alert
-            assert not mock_send.called
+        with patch.dict("sys.modules", {"chart_command": mock_cc}):
+            candles = [[1, 1, 2, 0.5, 1.5, 100]]
+            assert spike_has_edge("BTC-USDT", candles, "short") is False
 
 
 # --------------------------------------------------------------------------- #
@@ -397,6 +321,26 @@ class TestTPOProfile:
         # Current price is 120, POC should be somewhere in range
         assert prof.poc_dist_pct is not None
 
+    def test_build_tpo_filters_to_current_utc_session(self):
+        """Session-aware TPO should ignore prior-day bars."""
+        now = datetime.now(timezone.utc)
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        prev_day = start - timedelta(days=1)
+        candles = [
+            [int((start + timedelta(hours=1)).timestamp() * 1000), 95, 100, 90, 98, 1000],
+            [int((start + timedelta(hours=2)).timestamp() * 1000), 98, 102, 95, 100, 1000],
+            [int((start + timedelta(hours=3)).timestamp() * 1000), 100, 104, 96, 101, 1000],
+            [int((start + timedelta(hours=4)).timestamp() * 1000), 101, 106, 99, 103, 1000],
+            [int((start + timedelta(hours=5)).timestamp() * 1000), 103, 108, 101, 105, 1000],
+            [int((prev_day + timedelta(hours=1)).timestamp() * 1000), 180, 200, 170, 190, 1000],
+            [int((prev_day + timedelta(hours=2)).timestamp() * 1000), 190, 210, 180, 200, 1000],
+        ]
+        prof = build_tpo(candles, session_start=start)
+        assert prof is not None
+        assert prof.price_high <= 108.0
+        assert prof.price_low >= 90.0
+        assert prof.last == 98.0
+
 
 # --------------------------------------------------------------------------- #
 # Test mean reversion edge cases
@@ -520,6 +464,167 @@ class TestAnalyzeCommand:
         with patch("okx_tele_bot.okx_get", side_effect=Exception("Not found")):
             with pytest.raises(ValueError, match="unknown instrument"):
                 analyze("FAKE-USDT-SWAP", "USDT")
+
+
+# --------------------------------------------------------------------------- #
+# Test macro gauges (BTC.D / USDT.D / DXY)
+# --------------------------------------------------------------------------- #
+class TestResolveMacro:
+    def test_aliases_map_to_canonical(self):
+        for q in ("btc.d", "BTC.D", "btcd", "BTCDOM", "btc-d"):
+            assert resolve_macro(q) == "BTC.D"
+        for q in ("usdt.d", "USDTD", "USDTM", "usdt-d"):
+            assert resolve_macro(q) == "USDT.D"
+        for q in ("dxy", "DXY", "usdx", "dollar"):
+            assert resolve_macro(q) == "DXY"
+
+    def test_real_coins_are_not_macro(self):
+        """Regression: normal instruments must fall through to resolve_inst_id()."""
+        for q in ("btc", "sol", "hype", "eth", "doge", ""):
+            assert resolve_macro(q) is None
+
+    def test_tolerates_a_resolved_instid(self):
+        """'/analyze BTC.D-USDT-SWAP' (what the old code built) still resolves."""
+        assert resolve_macro("BTC.D-USDT-SWAP") == "BTC.D"
+
+    def test_no_alias_shadows_a_real_okx_base(self):
+        """An alias must never hijack a listed perp. Guards future alias additions."""
+        okx_bases = {"BTC", "ETH", "SOL", "DOGE", "HYPE", "ZEC", "XAU", "MU", "SNDK"}
+        assert not (set(macro_feeds.ALIASES) & okx_bases)
+
+
+class TestLineCandles:
+    def test_shape_is_okx_compatible_and_newest_first(self):
+        rows = macro_feeds._line_candles([(1000, 50.0), (2000, 51.0), (3000, 50.5)])
+        assert len(rows) == 3
+        assert all(len(r) == 9 for r in rows)
+        assert [int(r[0]) for r in rows] == [3000, 2000, 1000]   # newest first
+        # analytics parse these straight out of the row
+        assert float(rows[0][4]) == 50.5
+
+    def test_no_invented_wicks(self):
+        """High/low must never exceed the open->close span for a derived index."""
+        rows = macro_feeds._line_candles([(1000, 50.0), (2000, 51.0)])
+        for r in rows:
+            o, h, l, c = float(r[1]), float(r[2]), float(r[3]), float(r[4])
+            assert h == max(o, c) and l == min(o, c)
+
+
+class TestDominanceMath:
+    """The derivation must land on the anchor's official level, and must not read a
+    partially-priced basket as a dominance move."""
+
+    ANCHOR = {
+        "supply": {"BTC": 20.0, "ETH": 100.0, "SOL": 400.0},
+        "inst": {"BTC": "BTC-USDT-SWAP", "ETH": "ETH-USDT-SWAP", "SOL": "SOL-USDT-SWAP"},
+        "uncovered": 400.0,
+        "usdt_mcap": 200.0,
+        "total": 2000.0,
+        "coverage": 0.8,
+        "ts": 0.0,
+    }
+
+    def _candles(self, price_map):
+        """price_map: {sym: {ts: close}} -> patched _okx_candles."""
+        def fake(inst_id, bar, limit):
+            sym = inst_id.split("-")[0]
+            series = price_map.get(sym, {})
+            return [[str(ts), "0", "0", "0", str(px), "0", "0", "0", "1"]
+                    for ts, px in sorted(series.items(), reverse=True)]
+        return fake
+
+    def test_level_matches_hand_computation(self):
+        # btc = 20*50 = 1000, alt = 100*4 + 400*0.5 = 600, uncovered = 400
+        # den = 2000 -> BTC.D = 50%, USDT.D = 200/2000 = 10%
+        prices = {"BTC": {i: 50.0 for i in range(1, 11)},
+                  "ETH": {i: 4.0 for i in range(1, 11)},
+                  "SOL": {i: 0.5 for i in range(1, 11)}}
+        with patch.object(macro_feeds, "_anchor", return_value=self.ANCHOR), \
+             patch.object(macro_feeds, "_okx_candles", side_effect=self._candles(prices)):
+            btcd, _ = macro_feeds._dominance_series("BTC.D", "15m", 10)
+            usdtd, _ = macro_feeds._dominance_series("USDT.D", "15m", 10)
+        assert float(btcd[0][4]) == pytest.approx(50.0)
+        assert float(usdtd[0][4]) == pytest.approx(10.0)
+
+    def test_partial_basket_bars_are_skipped(self):
+        """A bar where most of the basket has no candle would look like a huge
+        dominance spike. Those bars must be dropped, not derived."""
+        full = {i: 4.0 for i in range(1, 11)}
+        prices = {"BTC": {i: 50.0 for i in range(1, 11)},
+                  "ETH": full,
+                  "SOL": {i: 0.5 for i in range(1, 11)}}
+        del prices["ETH"][5]        # ETH carries 400/600 of alt supply weight
+        del prices["SOL"][5]
+        with patch.object(macro_feeds, "_anchor", return_value=self.ANCHOR), \
+             patch.object(macro_feeds, "_okx_candles", side_effect=self._candles(prices)):
+            rows, _ = macro_feeds._dominance_series("BTC.D", "15m", 10)
+        assert 5 not in [int(r[0]) for r in rows]
+        assert all(float(r[4]) == pytest.approx(50.0) for r in rows)
+
+
+class TestAnalyzeMacro:
+    FLAT = [[str(1000 - i), "50", "50", "50", "50", "0", "0", "0", "1"] for i in range(96)]
+
+    def _rising(self):
+        # newest-first: level climbs steadily toward the present
+        return [[str(1000 - i), f"{50 + (95 - i) * 0.02}", f"{50 + (95 - i) * 0.02}",
+                 f"{50 + (95 - i) * 0.02}", f"{50 + (95 - i) * 0.02}",
+                 "0", "0", "0", "1"] for i in range(96)]
+
+    def test_rising_dominance_reads_as_favour_btc(self):
+        meta = {"basket": 30, "coverage": 0.81, "anchor_age_min": 3.0,
+                "source": "OKX closes x CoinGecko supplies"}
+        with patch("okx_tele_bot.macro_candles", return_value=(self._rising(), meta)):
+            msg, verdict = analyze_macro("BTC.D")
+        assert "favour BTC over alts" in verdict
+        assert "BTC dominance" in msg
+
+    def test_never_emits_a_sized_plan(self):
+        """These are not executable on OKX — a Kelly plan would be a live trade call."""
+        meta = {"source": "Yahoo DX-Y.NYB", "lag_min": 10.0}
+        with patch("okx_tele_bot.macro_candles", return_value=(self._rising(), meta)):
+            msg, _ = analyze_macro("DXY")
+        assert "quarter-Kelly" not in msg and "Notional" not in msg
+        assert "not tradeable" in msg
+        assert "feed lag 10m" in msg          # delay must be disclosed
+
+    def test_flat_series_gives_no_signal(self):
+        meta = {"basket": 30, "coverage": 0.81, "anchor_age_min": 1.0, "source": "x"}
+        with patch("okx_tele_bot.macro_candles", return_value=(self.FLAT, meta)):
+            _, verdict = analyze_macro("USDT.D")
+        assert "flat / no clear regime signal" in verdict
+
+
+class TestMacroCommandRouting:
+    CFG = {"quote_filter": "USDT", "sizing": {"enabled": True, "account_equity_usd": 280}}
+
+    def test_analyze_btcd_routes_to_macro_not_okx(self):
+        """The original bug: '/analyze btc.d' built BTC.D-USDT-SWAP and 404'd."""
+        with patch("okx_tele_bot.analyze_macro", return_value=("MACRO OK", "v")) as m, \
+             patch("okx_tele_bot.analyze") as perp:
+            out = handle_command("/analyze btc.d", self.CFG)
+        assert out == "MACRO OK"
+        m.assert_called_once_with("BTC.D")
+        perp.assert_not_called()
+
+    def test_bare_macro_symbol_works(self):
+        with patch("okx_tele_bot.analyze_macro", return_value=("MACRO OK", "v")):
+            assert handle_command("btcdom", self.CFG) == "MACRO OK"
+
+    def test_normal_symbol_still_uses_okx_path(self):
+        with patch("okx_tele_bot.analyze", return_value=("PERP OK", "v")) as perp, \
+             patch("okx_tele_bot.analyze_macro") as m:
+            out = handle_command("/analyze sol", self.CFG)
+        assert out == "PERP OK"
+        perp.assert_called_once()
+        assert perp.call_args[0][0] == "SOL-USDT-SWAP"
+        m.assert_not_called()
+
+    def test_macro_failure_reports_the_macro_symbol(self):
+        with patch("okx_tele_bot.analyze_macro", side_effect=RuntimeError("feed down")):
+            out = handle_command("/analyze dxy", self.CFG)
+        assert "DXY" in out and "feed down" in out
+        assert "USDT-SWAP" not in out      # never show a fake instId
 
 
 if __name__ == "__main__":

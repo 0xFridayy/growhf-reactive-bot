@@ -24,6 +24,7 @@ Env vars (all optional until the feature that needs them is switched on):
   TELEGRAM_API_ID, TELEGRAM_API_HASH   Telethon user-account listener
 """
 
+import re
 import hashlib
 import os
 import sqlite3
@@ -148,14 +149,58 @@ NOISE = ["price prediction", "price analysis", "here's why", "top 5",
          "sponsored", "opinion:", "interview", "podcast"]
 
 
+# Keywords whose letters occur inside unrelated common words. Each one was
+# verified against the 3138-headline corpus:
+#   war  -> warns, Warsh (the Fed chair), rewards, software, toward, award
+#   ppi  -> shipping, stripping, dripping
+#   cpi/pce -> incidental letter runs
+#   fed  -> "federal" (which has its own keyword "federal reserve")
+#   sec  -> securities, second, sector  (and \bsec\b still catches "SEC's")
+_STRICT_WORDS = {"war", "ppi", "cpi", "pce", "fed", "sec"}
+
+
+def _kw_pattern(kw):
+    """Compile one taxonomy keyword into a word-aware regex.
+
+    Plain substring matching silently wrecked this taxonomy. Measured on 3138
+    real headlines: 443 contained "war" and 424 of those were false matches —
+    "rewards", "warns", "software", "toward", "award", and worst of all "Warsh",
+    the Fed chair's own surname. Any headline that matched nothing else fell
+    through to GEO on the strength of a three-letter substring.
+
+    Short keywords are therefore anchored at both ends ("war" matches war, not
+    warns), while longer ones stay open-ended so the deliberate stems in the
+    taxonomy keep working ("regulat" -> regulation/regulatory, "approv" ->
+    approval/approved). Trailing spaces some keywords used to disambiguate
+    ("sec ", "fed ") are no longer needed and are stripped — \\b handles it, and
+    it fixes the related miss where "sec " failed to match "SEC's".
+    """
+    k = kw.strip().lower()
+    if not k:
+        return None
+    body = re.escape(k)
+    # Anchoring on LENGTH alone is wrong: it also blocks the legitimate
+    # inflections of short stems ("hack" would stop matching hacked/hacker,
+    # costing 20 real HACK classifications). Only the genuinely ambiguous
+    # keywords get both-end anchoring; everything else stays stem-friendly.
+    if k in _STRICT_WORDS:
+        return re.compile(r"\b" + body + r"\b")
+    return re.compile(r"\b" + body)
+
+
+_TAXONOMY_RX = {cat: ([p for p in (_kw_pattern(k) for k in kws) if p], score)
+                for cat, (kws, score) in TAXONOMY.items()}
+_NOISE_RX = [p for p in (_kw_pattern(n) for n in NOISE) if p]
+
+
 def classify(title):
     """Return (category, base_score) or (None, 0) if noise/irrelevant."""
     t = (title or "").lower()
-    if any(n in t for n in NOISE):
+    if any(p.search(t) for p in _NOISE_RX):
         return None, 0
     best_cat, best_score = None, 0
-    for cat, (kws, score) in TAXONOMY.items():
-        if any(k in t for k in kws) and score > best_score:
+    for cat, (pats, score) in _TAXONOMY_RX.items():
+        if score > best_score and any(p.search(t) for p in pats):
             best_cat, best_score = cat, score
     return best_cat, best_score
 

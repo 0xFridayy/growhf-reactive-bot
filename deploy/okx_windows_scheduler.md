@@ -15,6 +15,9 @@ You run **two** bots as **two** scheduled tasks, both sharing the same
 Only `OKX-Bot` listens for Telegram commands, so there's no conflict on the
 shared bot token.
 
+A third, **scheduled** (not long-running) task is documented at the bottom of
+this file: `Crypto-Bias-Telegram` — see [Hourly bias job](#hourly-bias-job).
+
 ---
 
 ## Step 0: Install
@@ -170,6 +173,61 @@ The `.github/workflows/deploy.yml` and `install_okx_bot.sh` in this repo are for
 a **Linux server** deployment. If you're running locally on Windows you don't
 need them or any GitHub secrets — to update, just `git pull` and let Task
 Scheduler restart the bots.
+
+---
+
+## Hourly bias job
+
+`Crypto-Bias-Telegram` is different from the two bots above: it is **one-shot**,
+not long-running. It fires, posts a TOTAL3 / BTC.D / USDT.D + macro read to
+Telegram, and exits. So it uses **six daily time triggers** (19:00, 20:00,
+21:00, 22:00, 23:00, 00:00) instead of an at-startup + repeat trigger.
+
+| | |
+|---|---|
+| Script | `bias_telegram.py` |
+| Launcher | `run_bias.bat` → `run_bias_hidden.vbs` |
+| History | `bias_history.csv` (gitignored) · log `bias_telegram.log` |
+| Deps | stdlib only — no `pip install` needed |
+
+Registered with (already done — re-run to change the times):
+
+```powershell
+$repo='C:\Users\jason\Documents\GitHub\growhf-reactive-bot'
+$name='Crypto-Bias-Telegram'
+try { Unregister-ScheduledTask -TaskName $name -Confirm:$false } catch {}
+$trigs=@(); foreach($t in @('19:00','20:00','21:00','22:00','23:00','00:00')){
+  $trigs += New-ScheduledTaskTrigger -Daily -At $t }
+$act  = New-ScheduledTaskAction -Execute 'C:\Windows\System32\wscript.exe' `
+        -Argument "`"$repo\run_bias_hidden.vbs`"" -WorkingDirectory $repo
+$set  = New-ScheduledTaskSettingsSet -StartWhenAvailable `
+        -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+$prin = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
+        -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName $name -Action $act -Trigger $trigs `
+        -Settings $set -Principal $prin
+```
+
+**Test / manage:**
+
+```powershell
+Start-ScheduledTask  -TaskName Crypto-Bias-Telegram   # fire now
+Get-ScheduledTaskInfo -TaskName Crypto-Bias-Telegram  # LastTaskResult 0 = ok
+Disable-ScheduledTask -TaskName Crypto-Bias-Telegram  # pause
+Unregister-ScheduledTask -TaskName Crypto-Bias-Telegram -Confirm:$false  # remove
+```
+
+**Caveat:** `LogonType Interactive` means it only fires while you are logged in.
+To run logged-out, re-register with `-LogonType Password` (Task Scheduler will
+prompt for your Windows password).
+
+**Method caveat:** CoinGecko's free tier returns only a *current* dominance
+snapshot. The 4h/24h/72h deltas on BTC.D / USDT.D / TOTAL3 are **reconstructed**
+— anchored on the live snapshot and propagated back along hourly OKX price paths
+with supply held fixed. Accurate over a 3-day window (dominance moves are
+price-driven, not supply-driven) but it is a model, not measured tape. Each run
+appends a real snapshot to `bias_history.csv` so measured history accumulates.
 
 ---
 

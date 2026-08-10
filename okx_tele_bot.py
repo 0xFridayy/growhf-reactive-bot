@@ -21,12 +21,14 @@ Run:
 import json
 import time
 import traceback
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
 
 from kelly_sizing import SizingConfig, size_position
-from market_profile import build_tpo_profile, mean_reversion, regime
+from macro_feeds import META as MACRO_META, macro_candles, resolve_macro
+from market_profile import build_tpo, build_tpo_profile, mean_reversion, regime
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
 OKX_BASE = "https://www.okx.com"
@@ -46,6 +48,13 @@ REGIME_LABELS = {
     ("flat", "flat"): ("⚖️ quiet", "neutral"),
 }
 
+def regime_bias(label):
+    """Return a simple bias for downstream scoring from the OI regime label."""
+    if label == "🟢 longs building":
+        return "long"
+    if label == "🔴 shorts building":
+        return "short"
+    return "neutral"
 
 # --------------------------------------------------------------------------- #
 # Config / HTTP helpers
@@ -148,6 +157,22 @@ def tg_send(token, chat_id, text):
         print(f"[telegram] send failed: {e}")
 
 
+def tg_send_photo(token, chat_id, png_bytes, caption):
+    try:
+        SESSION.post(
+            f"{TG_BASE}/bot{token}/sendPhoto",
+            data={
+                "chat_id": chat_id,
+                "caption": caption,
+                "parse_mode": "Markdown",
+            },
+            files={"photo": ("chart.png", png_bytes, "image/png")},
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        print(f"[telegram] sendPhoto failed: {e}")
+
+
 def tg_get_updates(token, offset, timeout=20):
     try:
         r = SESSION.get(
@@ -166,11 +191,11 @@ def tg_get_updates(token, offset, timeout=20):
 # Signal logic
 # --------------------------------------------------------------------------- #
 def direction(pct, dead_zone):
-    if pct > dead_zone:
+    if abs(pct) <= dead_zone:
+        return "flat"
+    if pct > 0:
         return "up"
-    if pct < -dead_zone:
-        return "down"
-    return "flat"
+    return "down"
 
 
 def pct_change(new, old):
@@ -188,7 +213,10 @@ def analyze(inst_id, quote_filter, sizing_cfg=None):
     row = tickers.get(inst_id)
     if row is None:
         # Fall back to a direct ticker lookup (covers filtered-out quotes).
-        data = okx_get("/api/v5/market/ticker", {"instId": inst_id}).get("data", [])
+        try:
+            data = okx_get("/api/v5/market/ticker", {"instId": inst_id}).get("data", [])
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"unknown instrument {inst_id}") from exc
         if not data:
             raise ValueError(f"unknown instrument {inst_id}")
         row = data[0]
@@ -213,7 +241,11 @@ def analyze(inst_id, quote_filter, sizing_cfg=None):
     funding = fetch_funding(inst_id)
 
     # Market-profile analytics (TPO POC/VAH/VAL, mean reversion, regime).
-    prof = build_tpo_profile(candles) if candles else None
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    prev_session = today_start - timedelta(days=1)
+    prof = build_tpo_profile(candles, session_start=today_start) if candles else None
+    prof_today = prof
+    prof_prev = build_tpo(candles, session=prev_session) if candles else None
     mr = mean_reversion(candles) if candles else None
     reg = regime(candles) if candles else None
 
@@ -249,10 +281,23 @@ def analyze(inst_id, quote_filter, sizing_cfg=None):
     # Regime decides which playbook drives the verdict. In a range, fade the
     # extremes back toward POC; in a trend, let momentum carry the score.
     if reg is not None and reg.favored == "mean-reversion" and mr is not None and prof is not None:
-        if mr.signal == "fade-short" or last > prof.vah:
+        if prof_prev is not None and prof_today is not None:
+            poc_drift = prof_today.poc - prof_prev.poc
+            price_move = last - prof_today.poc
+            if (poc_drift > 0 and price_move > 0) or (poc_drift < 0 and price_move < 0):
+                reasons.append("POC drift agrees with price move → trend, no fade")
+            elif mr.signal == "fade-short" and last > prof.vah:
+                score -= 2
+                reasons.append("range regime: price stretched high → fade toward POC")
+            elif mr.signal == "fade-long" and last < prof.val:
+                score += 2
+                reasons.append("range regime: price stretched low → fade toward POC")
+            else:
+                reasons.append("profile is inside value / near POC → no fade edge")
+        elif mr.signal == "fade-short" and last > prof.vah:
             score -= 2
             reasons.append("range regime: price stretched high → fade toward POC")
-        elif mr.signal == "fade-long" or last < prof.val:
+        elif mr.signal == "fade-long" and last < prof.val:
             score += 2
             reasons.append("range regime: price stretched low → fade toward POC")
 
@@ -303,6 +348,161 @@ def analyze(inst_id, quote_filter, sizing_cfg=None):
         if plan:
             lines.append(plan)
 
+    # Edge check: report whether CVD/structure support an execution edge and show details
+    try:
+        from okx_perp_screener import spike_has_edge
+        import chart_command as cc
+
+        # Build chart-style candles (oldest-first dicts) from the API newest-first rows
+        chart_candles = [
+            {
+                "ts": int(c[0]),
+                "o": float(c[1]),
+                "h": float(c[2]),
+                "l": float(c[3]),
+                "c": float(c[4]),
+                "v": float(c[5]),
+            }
+            for c in reversed(candles or [])
+            if len(c) >= 6
+        ]
+
+        ccy = inst_id.split("-")[0]
+        cvd_series = cc.fetch_cvd(ccy)
+        cvd_vals = cc.resample_to_candles(cvd_series, chart_candles, "cvd") if cvd_series else []
+        cvd_tag, cvd_msg = (None, None)
+        if cvd_vals:
+            cvd_tag, cvd_msg = cc.cvd_read(chart_candles, cvd_vals)
+
+        highs, lows = cc.causal_pivots(chart_candles, n=3) if chart_candles else ([], [])
+        st = cc.structure_state(chart_candles, highs, lows) if chart_candles else None
+
+        spike_side = None
+        if "LONG" in verdict or "LONG bias" in verdict:
+            spike_side = "long"
+        elif "SHORT" in verdict or "SHORT bias" in verdict:
+            spike_side = "short"
+
+        if spike_side:
+            has_edge = spike_has_edge(inst_id, candles, spike_side)
+            if has_edge:
+                lines.append("\n🧭 Edge: ✅ CVD/structure support this bias")
+            else:
+                lines.append("\n🧭 Edge: ❌ no CVD/structure support — treat cautiously")
+        else:
+            long_edge = spike_has_edge(inst_id, candles, "long")
+            short_edge = spike_has_edge(inst_id, candles, "short")
+            if long_edge or short_edge:
+                edges = []
+                if long_edge:
+                    edges.append("long")
+                if short_edge:
+                    edges.append("short")
+                lines.append(f"\n🧭 Edge: ✅ available for {', '.join(edges)}")
+            else:
+                lines.append("\n🧭 Edge: ❌ none detected (CVD/structure divergent)")
+
+        # Add detailed context when available
+        details = []
+        if cvd_tag:
+            details.append(f"CVD: {cvd_tag} — {cvd_msg}")
+        if st is not None:
+            details.append(f"Structure: {st.state} / {st.last_event} (idx {st.at_index})")
+        if details:
+            lines.append("\n" + " · ".join(details))
+    except Exception:
+        # Non-fatal: leave analyze() working if chart helpers are unavailable
+        pass
+
+    return "\n".join(lines), verdict
+
+
+def analyze_macro(sym, bar="15m", limit=96):
+    """
+    Same read as analyze(), for a macro gauge (BTC.D / USDT.D / DXY).
+
+    Deliberately NOT analyze() with a different symbol: there is no ticker, no funding,
+    no open interest and no volume behind these, and none of the three is executable on
+    OKX — so this returns positioning context and never a sized trade plan.
+    """
+    candles, meta = macro_candles(sym, bar=bar, limit=limit)
+    name, unit, up_msg, down_msg = MACRO_META[sym]
+
+    closes = [float(c[4]) for c in candles]          # newest first
+    last = closes[0]
+
+    def chg(bars):
+        return pct_change(last, closes[bars]) if len(closes) > bars else 0.0
+
+    chg1h, chg4h, chg_full = chg(4), chg(16), chg(len(closes) - 1)
+
+    prof = build_tpo_profile(candles)
+    mr = mean_reversion(candles)
+    reg = regime(candles)
+
+    # Momentum scoring only — no funding/volume inputs exist for an index. Thresholds
+    # are an order of magnitude tighter than the perp side because dominance moves in
+    # basis points, not percent (measured 5m sigma: BTC.D 0.018%, DXY 0.016%).
+    thresh_1h, thresh_4h = (0.15, 0.30) if unit == "%" else (0.10, 0.20)
+    score = 0.0
+    reasons = []
+    if abs(chg1h) > thresh_1h:
+        score += 1 if chg1h > 0 else -1
+        reasons.append(f"1h {chg1h:+.3f}%")
+    if abs(chg4h) > thresh_4h:
+        score += 1 if chg4h > 0 else -1
+        reasons.append(f"4h {chg4h:+.3f}%")
+    if reg is not None and reg.favored == "mean-reversion" and mr is not None:
+        if mr.signal == "fade-short":
+            score -= 1
+            reasons.append("range regime: stretched high → expect mean reversion")
+        elif mr.signal == "fade-long":
+            score += 1
+            reasons.append("range regime: stretched low → expect mean reversion")
+
+    if score >= 1:
+        verdict = f"\U0001F7E2 {sym} rising — {up_msg}"
+    elif score <= -1:
+        verdict = f"\U0001F534 {sym} falling — {down_msg}"
+    else:
+        verdict = f"⚖️ {sym} flat / no clear regime signal"
+
+    span_h = len(closes) * (0.25 if bar == "15m" else 1)
+    lines = [
+        f"\U0001F50D <b>{sym}</b> — {name} <i>(derived, not an OKX perp)</i>",
+        f"Level {last:.4f}{unit} | {span_h:.0f}h {chg_full:+.3f}% | "
+        f"1h {chg1h:+.3f}% | 4h {chg4h:+.3f}%",
+    ]
+    if "lag_min" in meta:
+        lines.append(f"Source: {meta['source']} · feed lag {meta['lag_min']:.0f}m")
+    else:
+        lines.append(f"Source: {meta['source']} · {meta['basket']} alts, "
+                     f"{meta['coverage'] * 100:.0f}% of crypto mcap · "
+                     f"anchored {meta['anchor_age_min']:.0f}m ago")
+
+    if reg is not None:
+        lines.append(f"\n\U0001F9ED <b>Regime:</b> {reg.label} — favours {reg.favored}")
+    if prof is not None:
+        loc = "inside value" if prof.in_value_area else (
+            "above value (premium)" if last > prof.vah else "below value (discount)"
+        )
+        lines.append(
+            f"\n\U0001F4CA <b>TPO profile</b>\n"
+            f"POC {prof.poc:.4f} ({prof.poc_dist_pct:+.2f}%) | "
+            f"VAH {prof.vah:.4f} | VAL {prof.val:.4f}\n"
+            f"Level is {loc} [{prof.value_area_pct:.0f}% VA]"
+        )
+    if mr is not None:
+        lines.append(
+            f"\n\U0001F501 <b>Mean reversion</b>\n"
+            f"Mean {mr.mean:.4f} | ±2σ [{mr.lower:.4f}, {mr.upper:.4f}]\n"
+            f"{mr.note}"
+        )
+
+    lines.append(f"\n<b>Verdict:</b> {verdict}")
+    if reasons:
+        lines.append("• " + "\n• ".join(reasons))
+    lines.append("\n<i>Regime context — not tradeable on OKX, so no sized plan.</i>")
     return "\n".join(lines), verdict
 
 
@@ -342,7 +542,13 @@ def _sized_plan(entry, chg4h, score, scfg):
 # --------------------------------------------------------------------------- #
 # Command handling
 # --------------------------------------------------------------------------- #
-def handle_command(text, cfg):
+def handle_command(text, cfg, ack=None):
+    """Return the reply for an inbound Telegram message.
+
+    `ack` is an optional callable(str) used to send an immediate interim reply
+    for commands that take long enough to look hung. It is optional so the
+    existing two-arg callers (and tests) keep working.
+    """
     quote_filter = cfg.get("quote_filter") or "USDT"
     sizing_cfg = cfg.get("sizing", {})
     parts = text.strip().split()
@@ -354,13 +560,41 @@ def handle_command(text, cfg):
         return (
             "\U0001F916 <b>OKX Telegram bot</b>\n"
             "Commands:\n"
+            "• <code>/bias</code> — market bias now: TOTAL3, BTC.D, USDT.D + macro\n"
+            "  same read the 19:00–00:00 auto-post sends\n"
             "• <code>/analyze BTC</code> — full read + verdict (or just send <code>btc</code>)\n"
             "  includes TPO profile (POC/VAH/VAL), mean-reversion z-score, and regime\n"
             "• <code>/profile BTC</code> / <code>/regime BTC</code> — same full read\n"
+            "• <code>/analyze BTC.D</code> — macro gauges: <code>BTC.D</code> "
+            "(a.k.a. BTCDOM), <code>USDT.D</code>, <code>DXY</code>\n"
+            "  regime context only — derived indices, so no sized plan\n"
             "• <code>/status</code> — what I'm watching\n"
             "• <code>/help</code> — this message\n\n"
             "I also push OI-flip and funding-flip alerts automatically."
         )
+
+    if cmd == "bias":
+        # Imported lazily: a broken/missing bias_telegram must not stop this
+        # bot from starting or from serving every other command.
+        if ack:
+            ack("⏳ Building bias — a few seconds…")
+        try:
+            from bias_telegram import render_bias
+
+            return render_bias()
+        except Exception as e:  # noqa: BLE001 - report cleanly to the user
+            return f"⚠️ Couldn't build bias: {e}"
+    if cmd == "chart":
+        symbol = parts[1] if len(parts) > 1 else "BTC"
+        if ack:
+            ack(f"⏳ Building chart for {symbol}…")
+        try:
+            from chart_command import render_chart_report
+
+            png, caption = render_chart_report(symbol)
+            return {"type": "photo", "png": png, "caption": caption}
+        except Exception as e:  # noqa: BLE001 - report cleanly to the user
+            return f"⚠️ Couldn't build chart for <b>{symbol}</b>: {e}"
     if cmd == "status":
         of = cfg.get("oi_funding", {})
         return (
@@ -380,6 +614,16 @@ def handle_command(text, cfg):
         target = parts[0]
     if target is None:
         return None
+
+    # Macro gauges first — they are not OKX instruments, so appending -USDT-SWAP
+    # would only ever produce "unknown instrument BTC.D-USDT-SWAP".
+    macro_sym = resolve_macro(target)
+    if macro_sym:
+        try:
+            msg, _ = analyze_macro(macro_sym)
+            return msg
+        except Exception as e:  # noqa: BLE001 - report cleanly to the user
+            return f"⚠️ Couldn't analyze <b>{macro_sym}</b>: {e}"
 
     inst_id = resolve_inst_id(target, quote_filter)
     try:
@@ -401,6 +645,7 @@ class FlipScanner:
         self.top_n = int(of.get("universe_top_n", 40))
         self.oi_dead_zone = float(of.get("oi_change_threshold_pct", 5.0))
         self.price_dead_zone = float(of.get("price_change_threshold_pct", 0.5))
+        self.oi_flip_enabled = bool(of.get("oi_flip_enabled", True))
         self.funding_min_abs = float(of.get("funding_flip_min_abs", 0.0001))
         self.cooldown = float(of.get("cooldown_seconds", 3600))
         self.interval = float(of.get("scan_interval_seconds", 300))
@@ -438,38 +683,16 @@ class FlipScanner:
             if price is None or cur_oi is None:
                 continue
 
-            self._check_oi_flip(inst, price, cur_oi, now, token, chat_id)
+            # OI-flip alerts removed per user request — do not call the checker.
+            # Keep history for other features (funding flips, diagnostics).
             self.prev_oi[inst] = cur_oi
             self.prev_price[inst] = price
 
         self._check_funding_flips(universe, now, token, chat_id)
 
     def _check_oi_flip(self, inst, price, cur_oi, now, token, chat_id):
-        old_oi = self.prev_oi.get(inst)
-        old_price = self.prev_price.get(inst)
-        if old_oi is None or old_price is None:
-            return
-        oi_dir = direction(pct_change(cur_oi, old_oi), self.oi_dead_zone)
-        px_dir = direction(pct_change(price, old_price), self.price_dead_zone)
-        label, tone = REGIME_LABELS.get((px_dir, oi_dir), ("", "neutral"))
-        prev = self.prev_regime.get(inst)
-        self.prev_regime[inst] = label
-        if not label or prev is None or label == prev or tone == "neutral":
-            return
-        if self._cooling(inst, now):
-            return
-        oi_chg = pct_change(cur_oi, old_oi)
-        px_chg = pct_change(price, old_price)
-        tg_send(
-            token,
-            chat_id,
-            f"\U0001F504 <b>OI flip: {inst}</b>\n"
-            f"{prev} → {label}\n"
-            f"Price {px_chg:+.2f}% | OI {oi_chg:+.2f}% (last scan)\n"
-            f"Last {price:.6g}",
-        )
-        self.last_alert[inst] = now
-        print(f"[oi-flip] {inst}: {prev} -> {label}")
+        # OI-flip logic has been removed per user request; do nothing.
+        return
 
     def _check_funding_flips(self, universe, now, token, chat_id):
         for inst in universe:
@@ -528,9 +751,15 @@ def main():
                 if not msg:
                     continue
                 text = msg.get("text", "")
-                reply = handle_command(text, cfg)
+                origin = str(msg["chat"]["id"])
+                reply = handle_command(
+                    text, cfg, ack=lambda t, c=origin: tg_send(token, c, t)
+                )
                 if reply:
-                    tg_send(token, str(msg["chat"]["id"]), reply)
+                    if isinstance(reply, dict) and reply.get("type") == "photo":
+                        tg_send_photo(token, origin, reply["png"], reply["caption"])
+                    else:
+                        tg_send(token, origin, reply)
 
             # 2) Run the OI/funding flip scan when due.
             if scanner.due(time.time()):
