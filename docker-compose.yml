@@ -1,17 +1,53 @@
-version: '3.8'
+# Three long-running bots off one image. `restart: unless-stopped` means Docker
+# brings them back after a crash or a host reboot — the always-on behaviour the
+# Windows Task Scheduler setup never reliably gave us.
+#
+#   docker compose up -d --build      start everything
+#   docker compose logs -f okx-bot    follow one bot
+#   docker compose down               stop everything
+#
+# IMPORTANT: exactly one process may long-poll a given Telegram token. Disable
+# the Windows scheduled task before starting okx-bot, or the two fight over
+# getUpdates and Telegram 409s them both into dropping messages.
+
+x-common: &common
+  build: .
+  image: growhf-bots:latest
+  restart: unless-stopped
+  environment:
+    TZ: UTC
+  volumes:
+    # Secret stays on the host and is mounted read-only — never in the image.
+    - ./config.json:/app/config.json:ro
+    - ./logs:/app/logs
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "50m"
+      max-file: "5"
 
 services:
-  growhf-bot:
-    build: .
-    container_name: growhf-bot
-    restart: unless-stopped
+  okx-bot:
+    <<: *common
+    container_name: okx-bot
+    command: ["python", "okx_tele_bot.py"]
     volumes:
       - ./config.json:/app/config.json:ro
       - ./logs:/app/logs
-    environment:
-      - TZ=UTC
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100m"
-        max-file: "10"
+      # Bind-mounted, not a named volume: a named volume would mask the image's
+      # alpha_ml/status.py and then serve stale copies after every rebuild.
+      # Binding the host directory also means a training run on the host is
+      # visible to /alpha_status immediately, with no sync step.
+      - ./alpha_ml:/app/alpha_ml
+
+  okx-spike:
+    <<: *common
+    container_name: okx-spike
+    command: ["python", "okx_perp_screener.py"]
+
+  growhf-bot:
+    <<: *common
+    container_name: growhf-bot
+    command: ["python", "growhf_reactive_bot.py"]
+    # Off by default — enable with: docker compose --profile extra up -d
+    profiles: ["extra"]
