@@ -365,7 +365,19 @@ def format_trades_telegram(limit=8):
 
 
 if __name__ == "__main__":
+    import tempfile
+
     print("alpha_ml/status.py self-test\n")
+    # Redirect the module's paths at a scratch directory FIRST. This self-test
+    # writes a fake BTC-USDT-SWAP status with a healthy-looking Sharpe; run
+    # against the live paths it would silently replace the real checkpoint with
+    # plausible fiction, and unlike a SELFTEST row nothing downstream could
+    # tell. No self-test in this package writes where the bot reads.
+    _tmp = Path(tempfile.mkdtemp(prefix="alpha_status_selftest_"))
+    STATUS_JSON = _tmp / "alpha_status.json"
+    STATUS_HISTORY_CSV = _tmp / "alpha_status_history.csv"
+    print(f"  writing to scratch dir {_tmp}\n")
+
     write_status({
         "inst": "BTC-USDT-SWAP", "bar": "5m", "search_frac": 0.7,
         "xgb_auc": 0.612, "xgb_acc": 0.548, "xgb_expectancy_bps": 4.2,
