@@ -181,6 +181,20 @@ class SignalScorer:
         except (AttributeError, IndexError):
             return float(self.model.predict(x)[0])
 
+    def predict_proba_batch(self, frame) -> np.ndarray:
+        """Whole-table version of predict_proba. The strategy search scores
+        hundreds of configs against the same bars, so the gate probability for
+        every bar is computed once here instead of one model call per candidate
+        entry — same numbers, orders of magnitude less time."""
+        n = len(frame)
+        if not self.is_trained or n == 0:
+            return np.full(n, 0.5)
+        X = frame.reindex(columns=self.cols).astype(float).fillna(0.0).to_numpy()
+        try:
+            return self.model.predict_proba(X)[:, 1]
+        except (AttributeError, IndexError):
+            return self.model.predict(X).astype(float)
+
     def save(self, path):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)

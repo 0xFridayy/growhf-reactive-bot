@@ -1,0 +1,279 @@
+{
+  "inst": "BTC-USDT-SWAP",
+  "bar": "5m",
+  "ts_utc": "2026-08-10T16:45:42.850317+00:00",
+  "run_date": "2026-08-10",
+  "n_bars": 11952,
+  "n_train": 5976,
+  "n_val": 2988,
+  "n_holdout": 2988,
+  "fee": 0.0005,
+  "min_trades": 15,
+  "n_configs_tried": 392,
+  "n_configs_tradeable": 362,
+  "luck_bar_sharpe": 20.497478288738463,
+  "holdout_luck_bar": 10.641540227666761,
+  "champion": "pocfade(dist=0.4) -> flip()+ml_gate(0.55)",
+  "champion_spec": {
+    "entry": "pocfade",
+    "entry_params": {
+      "dist": 0.4
+    },
+    "exits": [
+      {
+        "rule": "flip",
+        "params": {}
+      }
+    ],
+    "prob_threshold": 0.55
+  },
+  "champion_describe": "entry: pocfade(dist=0.4)\ngate : phase-1 XGBoost P(win) >= 0.55\nexit : flip()",
+  "champion_val": {
+    "total_return": 0.0472770750234874,
+    "sharpe": 6.149954352129978,
+    "sortino": 8.00002714367402,
+    "max_drawdown": -0.02673972577344462,
+    "profit_factor": 2.0145930534200636,
+    "trade_count": 24,
+    "win_rate": 0.7083333333333334,
+    "avg_trade_pnl": 0.0019505080008693804,
+    "avg_bars_held": 112.625,
+    "turnover": 47.0,
+    "fees_paid": 0.0235,
+    "gated_entries": 86
+  },
+  "champion_holdout": {
+    "total_return": -0.02313899595138863,
+    "sharpe": -3.6635431982900166,
+    "sortino": -3.9981632276166366,
+    "max_drawdown": -0.03536559808243087,
+    "profit_factor": 0.6361650080422084,
+    "trade_count": 18,
+    "win_rate": 0.6111111111111112,
+    "avg_trade_pnl": -0.0013003538442400513,
+    "avg_bars_held": 142.16666666666666,
+    "turnover": 35.0,
+    "fees_paid": 0.0175,
+    "gated_entries": 47
+  },
+  "champion_exit_breakdown": {
+    "signal_flip": {
+      "n": 17,
+      "pnl": -0.012038826426146967,
+      "avg_pnl": -0.0007081662603615863
+    },
+    "end_of_data": {
+      "n": 1,
+      "pnl": -0.011367542770173954,
+      "avg_pnl": -0.011367542770173954
+    }
+  },
+  "champion_holdout_uses": 1,
+  "beats_luck_bar": false,
+  "baseline": {
+    "total_return": -0.1358485828770198,
+    "sharpe": -21.72124005480298,
+    "sortino": -29.769229306218943,
+    "max_drawdown": -0.16293974806734252,
+    "profit_factor": 0.40610022975874294,
+    "trade_count": 122,
+    "win_rate": 0.2459016393442623,
+    "avg_trade_pnl": -0.0011167184603747384,
+    "avg_bars_held": 20.221311475409838,
+    "turnover": 243.0,
+    "fees_paid": 0.12150000000000001,
+    "gated_entries": 0
+  },
+  "baseline_name": "momentum(deadzone=0.15) -> flip()",
+  "targets": {
+    "sharpe": 1.0,
+    "profit_factor": 1.2,
+    "trade_count": 20,
+    "max_drawdown": -0.1
+  },
+  "target_checks": {
+    "sharpe": {
+      "value": -3.6635431982900166,
+      "target": 1.0,
+      "pass": false
+    },
+    "profit_factor": {
+      "value": 0.6361650080422084,
+      "target": 1.2,
+      "pass": false
+    },
+    "trade_count": {
+      "value": 18,
+      "target": 20,
+      "pass": false
+    },
+    "max_drawdown": {
+      "value": -0.03536559808243087,
+      "target": -0.1,
+      "pass": true
+    },
+    "above_noise": {
+      "value": -3.6635431982900166,
+      "target": 10.641540227666761,
+      "pass": false
+    }
+  },
+  "satisfied": false,
+  "top": [
+    {
+      "name": "pocfade(dist=0.4) -> flip()+ml_gate(0.55)",
+      "val": {
+        "total_return": 0.0472770750234874,
+        "sharpe": 6.149954352129978,
+        "sortino": 8.00002714367402,
+        "max_drawdown": -0.02673972577344462,
+        "profit_factor": 2.0145930534200636,
+        "trade_count": 24,
+        "win_rate": 0.7083333333333334,
+        "avg_trade_pnl": 0.0019505080008693804,
+        "avg_bars_held": 112.625,
+        "turnover": 47.0,
+        "fees_paid": 0.0235,
+        "gated_entries": 86
+      },
+      "holdout": {
+        "total_return": -0.02313899595138863,
+        "sharpe": -3.6635431982900166,
+        "sortino": -3.9981632276166366,
+        "max_drawdown": -0.03536559808243087,
+        "profit_factor": 0.6361650080422084,
+        "trade_count": 18,
+        "win_rate": 0.6111111111111112,
+        "avg_trade_pnl": -0.0013003538442400513,
+        "avg_bars_held": 142.16666666666666,
+        "turnover": 35.0,
+        "fees_paid": 0.0175,
+        "gated_entries": 47
+      }
+    },
+    {
+      "name": "pocfade(dist=0.4) -> flip()",
+      "val": {
+        "total_return": 0.04929860975181792,
+        "sharpe": 6.061358884355137,
+        "sortino": 8.25622536369381,
+        "max_drawdown": -0.026739725773444613,
+        "profit_factor": 1.7701292120021979,
+        "trade_count": 27,
+        "win_rate": 0.7407407407407407,
+        "avg_trade_pnl": 0.0018102363356296512,
+        "avg_bars_held": 107.37037037037037,
+        "turnover": 53.0,
+        "fees_paid": 0.026500000000000003,
+        "gated_entries": 0
+      },
+      "holdout": {
+        "total_return": -0.015700120675483695,
+        "sharpe": -2.415157381717575,
+        "sortino": -2.7336116477729204,
+        "max_drawdown": -0.03524397021513323,
+        "profit_factor": 0.7555613818121037,
+        "trade_count": 19,
+        "win_rate": 0.631578947368421,
+        "avg_trade_pnl": -0.000841722693880837,
+        "avg_bars_held": 141.8421052631579,
+        "turnover": 37.0,
+        "fees_paid": 0.0185,
+        "gated_entries": 0
+      }
+    },
+    {
+      "name": "momentum(deadzone=0.35) -> flip()",
+      "val": {
+        "total_return": 0.012906064204188827,
+        "sharpe": 1.7204810274121347,
+        "sortino": 2.261577260887917,
+        "max_drawdown": -0.039102027918169774,
+        "profit_factor": 1.131355808531816,
+        "trade_count": 31,
+        "win_rate": 0.45161290322580644,
+        "avg_trade_pnl": 0.0003941095026031316,
+        "avg_bars_held": 80.80645161290323,
+        "turnover": 61.0,
+        "fees_paid": 0.030500000000000006,
+        "gated_entries": 0
+      },
+      "holdout": {
+        "total_return": -0.033256717340712005,
+        "sharpe": -5.446798610612058,
+        "sortino": -6.9612412009395195,
+        "max_drawdown": -0.07977761717310387,
+        "profit_factor": 0.5680414168921905,
+        "trade_count": 24,
+        "win_rate": 0.2916666666666667,
+        "avg_trade_pnl": -0.0014114905336049506,
+        "avg_bars_held": 104.04166666666667,
+        "turnover": 47.0,
+        "fees_paid": 0.0235,
+        "gated_entries": 0
+      }
+    },
+    {
+      "name": "pocfade(dist=0.4) -> flip()+time(max_hold=48)",
+      "val": {
+        "total_return": 0.011782546222393536,
+        "sharpe": 1.6570113407699656,
+        "sortino": 1.950154858740697,
+        "max_drawdown": -0.042678670875551585,
+        "profit_factor": 1.097619635362995,
+        "trade_count": 46,
+        "win_rate": 0.4782608695652174,
+        "avg_trade_pnl": 0.0002504818000782327,
+        "avg_bars_held": 39.130434782608695,
+        "turnover": 91.0,
+        "fees_paid": 0.0455,
+        "gated_entries": 0
+      },
+      "holdout": {
+        "total_return": -0.05310113894751652,
+        "sharpe": -9.191984614639116,
+        "sortino": -8.173964329478192,
+        "max_drawdown": -0.05503967210191436,
+        "profit_factor": 0.41758809281551384,
+        "trade_count": 33,
+        "win_rate": 0.45454545454545453,
+        "avg_trade_pnl": -0.0016228975391978583,
+        "avg_bars_held": 45.15151515151515,
+        "turnover": 65.0,
+        "fees_paid": 0.0325,
+        "gated_entries": 0
+      }
+    },
+    {
+      "name": "regime_router(deadzone=0.15,z=1.5) -> flip()+time(max_hold=48)",
+      "val": {
+        "total_return": 0.011346048075846882,
+        "sharpe": 1.5985809459595073,
+        "sortino": 2.0774655103434605,
+        "max_drawdown": -0.04910866137988796,
+        "profit_factor": 1.0875357187274952,
+        "trade_count": 78,
+        "win_rate": 0.48717948717948717,
+        "avg_trade_pnl": 0.00014494648516955884,
+        "avg_bars_held": 26.692307692307693,
+        "turnover": 156.0,
+        "fees_paid": 0.078,
+        "gated_entries": 0
+      },
+      "holdout": {
+        "total_return": -0.07145817435992481,
+        "sharpe": -13.578752177933929,
+        "sortino": -15.408376570836946,
+        "max_drawdown": -0.08693768651708408,
+        "profit_factor": 0.5024111947299114,
+        "trade_count": 71,
+        "win_rate": 0.38028169014084506,
+        "avg_trade_pnl": -0.0010162628260838296,
+        "avg_bars_held": 26.507042253521128,
+        "turnover": 141.0,
+        "fees_paid": 0.07050000000000001,
+        "gated_entries": 0
+      }
+    }
+  ]
+}

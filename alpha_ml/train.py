@@ -69,7 +69,11 @@ def bars_per_year(bar):
 
 def run(inst, bar, market, window=96, max_hold=12, xgb_folds=5,
        ddqn_episodes=200, episode_len=200, fee=0.0005, prob_threshold=0.55,
-       search_frac=0.7, seed=0):
+       search_frac=0.7, seed=0, persist=True):
+    """persist=False computes everything but does NOT write alpha_status.json.
+    The self-test passes False: its numbers come from synthetic data, and the
+    status file is what /alpha_status shows and what CI commits back to the
+    repo — a smoke test must never be able to masquerade as a real result."""
     print(f"[1/5] building feature table (window={window}) ...")
     df, cols = assemble(market, window=window)
     print(f"      {len(df)} rows x {len(cols)} features")
@@ -119,8 +123,13 @@ def run(inst, bar, market, window=96, max_hold=12, xgb_folds=5,
     m_holdout = compute_metrics(trace_holdout, bars_per_year=bpy)
     backtest_report(m_holdout)
 
+    # "Overfit" means the search period found something the holdout won't
+    # honor — which requires the search period to have found something at all.
+    # Both clauses therefore need a positive search Sharpe; without that guard
+    # a policy losing on BOTH sides (search -8, holdout -18, gap +10) trips the
+    # gap clause and gets reported as overfitting when it is simply broken.
     gap = m_search["sharpe"] - m_holdout["sharpe"]
-    overfit = m_holdout["sharpe"] <= 0 <= m_search["sharpe"] or gap > 1.0
+    overfit = m_search["sharpe"] > 0 and (m_holdout["sharpe"] <= 0 or gap > 1.0)
     if overfit:
         print(f"\n  ⚠ overfit warning: search Sharpe {m_search['sharpe']:+.2f} vs holdout "
               f"{m_holdout['sharpe']:+.2f} (gap {gap:+.2f}) — same collapse pattern seen in "
@@ -137,7 +146,8 @@ def run(inst, bar, market, window=96, max_hold=12, xgb_folds=5,
         "by_regime_search": m_search["by_regime"],
         "by_regime_holdout": m_holdout["by_regime"],
     }
-    write_status(status)
+    if persist:
+        write_status(status)
     return status, {"search": m_search, "holdout": m_holdout}
 
 
@@ -163,7 +173,8 @@ if __name__ == "__main__":
         print("alpha_ml/train.py self-test — full pipeline on synthetic data\n")
         market = synthetic_market(n=3000, planted=True)
         status, metrics = run("SELFTEST", "5m", market, window=48, max_hold=10,
-                              xgb_folds=3, ddqn_episodes=60, episode_len=80, seed=0)
+                              xgb_folds=3, ddqn_episodes=60, episode_len=80, seed=0,
+                              persist=False)
         assert status["xgb_auc"] == status["xgb_auc"], "xgb_auc is NaN"       # NaN != NaN
         assert status["bt_search_trade_count"] >= 0
         assert status["bt_holdout_trade_count"] >= 0

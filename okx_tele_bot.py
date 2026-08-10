@@ -565,18 +565,19 @@ def _sized_plan(entry, chg4h, score, scfg):
 # --------------------------------------------------------------------------- #
 # Command handling
 # --------------------------------------------------------------------------- #
-def _alpha_status_message():
-    """Reads alpha_ml/status.py's persisted training/backtest status. Lazy,
-    path-scoped import so the live bot never needs xgboost/torch installed
-    just to answer /alpha_status — status.py itself is stdlib-only."""
+def _alpha_report(which, *args):
+    """Reads alpha_ml/status.py's persisted results. Lazy, path-scoped import
+    so the live bot never needs xgboost/torch installed just to answer these —
+    status.py itself is stdlib-only, and the heavy training/search runs
+    elsewhere and leaves its output on disk."""
     try:
         alpha_ml_dir = str(Path(__file__).with_name("alpha_ml"))
         if alpha_ml_dir not in sys.path:
             sys.path.insert(0, alpha_ml_dir)
-        from status import format_telegram
-        return format_telegram()
+        import status as alpha_status
+        return getattr(alpha_status, which)(*args)
     except Exception as e:  # noqa: BLE001 - report cleanly, never crash the bot over this
-        return f"⚠️ Alpha ML status unavailable: {e}"
+        return f"⚠️ Alpha ML report unavailable: {e}"
 
 
 def handle_command(text, cfg, ack=None):
@@ -607,6 +608,10 @@ def handle_command(text, cfg, ack=None):
             "  regime context only — derived indices, so no sized plan\n"
             "• <code>/status</code> — what I'm watching\n"
             "• <code>/alpha_status</code> — phase-1 XGBoost + phase-2 DDQN training/backtest progress\n"
+            "• <code>/alpha_search</code> — today's entry/exit strategy search: "
+            "what won, and whether it clears your bar\n"
+            "• <code>/alpha_trades [n]</code> — the last n trades with the reason "
+            "each was entered and exited\n"
             "• <code>/help</code> — this message\n\n"
             "I also push OI-flip and funding-flip alerts automatically."
         )
@@ -643,7 +648,17 @@ def handle_command(text, cfg, ack=None):
             f"Quote filter: {quote_filter}"
         )
     if cmd in ("alpha_status", "alpha"):
-        return _alpha_status_message()
+        return _alpha_report("format_telegram")
+    if cmd in ("alpha_search", "alpha_strategy"):
+        return _alpha_report("format_search_telegram")
+    if cmd in ("alpha_trades", "trades"):
+        limit = 8
+        if len(parts) > 1:
+            try:
+                limit = max(1, min(25, int(parts[1])))   # keep it inside one Telegram message
+            except ValueError:
+                return "Usage: <code>/alpha_trades 10</code>"
+        return _alpha_report("format_trades_telegram", limit)
 
     named_cmds = ("analyze", "profile", "regime")
     if cmd in named_cmds:

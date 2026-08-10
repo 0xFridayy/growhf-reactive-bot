@@ -25,6 +25,12 @@ COMMANDS = [
     {"command": "chart",
      "description": "Render a 4H OKX chart for a symbol, e.g. /chart BTC"},
     {"command": "status", "description": "What I'm watching"},
+    {"command": "alpha_status",
+     "description": "XGBoost + DDQN training/backtest progress"},
+    {"command": "alpha_search",
+     "description": "Today's entry/exit strategy search — what won"},
+    {"command": "alpha_trades",
+     "description": "Recent trades + why each was entered and exited"},
     {"command": "help", "description": "Command list"},
 ]
 
