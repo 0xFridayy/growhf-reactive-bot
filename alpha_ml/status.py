@@ -21,13 +21,17 @@ STATUS_JSON = Path(__file__).with_name("alpha_status.json")
 STATUS_HISTORY_CSV = Path(__file__).with_name("alpha_status_history.csv")
 WIB = ZoneInfo("Asia/Jakarta")
 
+_BT_SUFFIXES = [
+    "total_return", "sharpe", "sortino", "max_drawdown", "profit_factor",
+    "trade_count", "win_rate", "turnover", "fees_paid", "gated_entries",
+]
+
 HISTORY_FIELDS = [
-    "ts_utc", "inst", "bar",
+    "ts_utc", "inst", "bar", "search_frac",
     "xgb_auc", "xgb_acc", "xgb_expectancy_bps",
-    "ddqn_episodes", "ddqn_avg_reward",
-    "bt_total_return", "bt_sharpe", "bt_sortino", "bt_max_drawdown",
-    "bt_profit_factor", "bt_trade_count", "bt_win_rate",
-    "bt_turnover", "bt_fees_paid", "bt_gated_entries",
+    "ddqn_episodes", "ddqn_avg_reward", "overfit_flag",
+    *[f"bt_search_{s}" for s in _BT_SUFFIXES],
+    *[f"bt_holdout_{s}" for s in _BT_SUFFIXES],
 ]
 
 
@@ -93,32 +97,51 @@ def format_telegram(status=None):
         except ValueError:
             when = ts_utc
 
+    search_frac = status.get("search_frac")
+    split_s = (f"{search_frac:.0%}/{1 - search_frac:.0%}"
+               if isinstance(search_frac, (int, float)) else "n/a")
+
     lines = [
         "🤖 <b>Alpha ML status</b>",
-        f"{status.get('inst', 'n/a')} {status.get('bar', '')}",
+        f"{status.get('inst', 'n/a')} {status.get('bar', '')}   "
+        f"(search/holdout split: {split_s})",
         "",
         f"XGBoost AUC: {_fmt(status, 'xgb_auc', '{:.3f}')}   "
         f"acc: {_fmt(status, 'xgb_acc', '{:.3f}')}",
         f"DDQN avg reward: {_fmt(status, 'ddqn_avg_reward', '{:+.4f}')}   "
         f"episode: {_fmt(status, 'ddqn_episodes')}",
         "",
-        f"OOS PnL: {_fmt(status, 'bt_total_return', '{:+.2%}')}   "
-        f"Sharpe: {_fmt(status, 'bt_sharpe', '{:+.2f}')}   "
-        f"Sortino: {_fmt(status, 'bt_sortino', '{:+.2f}')}",
-        f"Max DD: {_fmt(status, 'bt_max_drawdown', '{:.2%}')}   "
-        f"Profit factor: {_fmt(status, 'bt_profit_factor', '{:.2f}')}",
-        f"Trades: {_fmt(status, 'bt_trade_count')}   "
-        f"Win rate: {_fmt(status, 'bt_win_rate', '{:.1%}')}",
-        f"Turnover: {_fmt(status, 'bt_turnover', '{:.1f}')}   "
-        f"Fees paid: {_fmt(status, 'bt_fees_paid', '{:.2%}')}   "
-        f"Gated entries: {_fmt(status, 'bt_gated_entries')}",
+        "<b>Search (in-sample — expect this to flatter the policy):</b>",
+        f"  PnL: {_fmt(status, 'bt_search_total_return', '{:+.2%}')}   "
+        f"Sharpe: {_fmt(status, 'bt_search_sharpe', '{:+.2f}')}   "
+        f"Sortino: {_fmt(status, 'bt_search_sortino', '{:+.2f}')}",
+        f"  Max DD: {_fmt(status, 'bt_search_max_drawdown', '{:.2%}')}   "
+        f"Trades: {_fmt(status, 'bt_search_trade_count')}   "
+        f"Win rate: {_fmt(status, 'bt_search_win_rate', '{:.1%}')}",
         "",
-        f"Last checkpoint: {when}",
+        "<b>Holdout (never seen in training — trust this number):</b>",
+        f"  PnL: {_fmt(status, 'bt_holdout_total_return', '{:+.2%}')}   "
+        f"Sharpe: {_fmt(status, 'bt_holdout_sharpe', '{:+.2f}')}   "
+        f"Sortino: {_fmt(status, 'bt_holdout_sortino', '{:+.2f}')}",
+        f"  Max DD: {_fmt(status, 'bt_holdout_max_drawdown', '{:.2%}')}   "
+        f"Profit factor: {_fmt(status, 'bt_holdout_profit_factor', '{:.2f}')}",
+        f"  Trades: {_fmt(status, 'bt_holdout_trade_count')}   "
+        f"Win rate: {_fmt(status, 'bt_holdout_win_rate', '{:.1%}')}",
+        f"  Turnover: {_fmt(status, 'bt_holdout_turnover', '{:.1f}')}   "
+        f"Fees paid: {_fmt(status, 'bt_holdout_fees_paid', '{:.2%}')}   "
+        f"Gated entries: {_fmt(status, 'bt_holdout_gated_entries')}",
     ]
-    by_regime = status.get("by_regime")
+    if status.get("overfit_flag"):
+        lines.append("")
+        lines.append("⚠️ <b>Overfit warning</b>: search Sharpe far exceeds holdout Sharpe — "
+                     "same collapse DailyScraper/NEOBDM's DDQN showed. Don't trade this yet.")
+    lines.append("")
+    lines.append(f"Last checkpoint: {when}")
+
+    by_regime = status.get("by_regime_holdout")
     if by_regime:
         lines.append("")
-        lines.append("<b>By regime:</b>")
+        lines.append("<b>Holdout by regime:</b>")
         for reg, m in by_regime.items():
             ret = m.get("total_return")
             sharpe = m.get("sharpe")
@@ -131,14 +154,21 @@ def format_telegram(status=None):
 if __name__ == "__main__":
     print("alpha_ml/status.py self-test\n")
     write_status({
-        "inst": "BTC-USDT-SWAP", "bar": "5m", "xgb_auc": 0.612, "xgb_acc": 0.548,
-        "xgb_expectancy_bps": 4.2, "ddqn_episodes": 18400, "ddqn_avg_reward": 0.0091,
-        "bt_total_return": 0.084, "bt_sharpe": 1.9, "bt_sortino": 2.4,
-        "bt_max_drawdown": -0.084, "bt_profit_factor": 1.63, "bt_trade_count": 1284,
-        "bt_win_rate": 0.547, "bt_turnover": 3120.0, "bt_fees_paid": 0.031,
-        "bt_gated_entries": 92,
-        "by_regime": {"trending": {"total_return": 0.05, "sharpe": 2.1},
-                      "ranging": {"total_return": 0.02, "sharpe": 1.1}},
+        "inst": "BTC-USDT-SWAP", "bar": "5m", "search_frac": 0.7,
+        "xgb_auc": 0.612, "xgb_acc": 0.548, "xgb_expectancy_bps": 4.2,
+        "ddqn_episodes": 18400, "ddqn_avg_reward": 0.0091, "overfit_flag": False,
+        "bt_search_total_return": 0.084, "bt_search_sharpe": 1.9, "bt_search_sortino": 2.4,
+        "bt_search_max_drawdown": -0.084, "bt_search_profit_factor": 1.63,
+        "bt_search_trade_count": 1284, "bt_search_win_rate": 0.547,
+        "bt_search_turnover": 3120.0, "bt_search_fees_paid": 0.031, "bt_search_gated_entries": 92,
+        "bt_holdout_total_return": 0.021, "bt_holdout_sharpe": 0.6, "bt_holdout_sortino": 0.8,
+        "bt_holdout_max_drawdown": -0.061, "bt_holdout_profit_factor": 1.08,
+        "bt_holdout_trade_count": 341, "bt_holdout_win_rate": 0.502,
+        "bt_holdout_turnover": 890.0, "bt_holdout_fees_paid": 0.009, "bt_holdout_gated_entries": 28,
+        "by_regime_search": {"trending": {"total_return": 0.05, "sharpe": 2.1},
+                             "ranging": {"total_return": 0.02, "sharpe": 1.1}},
+        "by_regime_holdout": {"trending": {"total_return": 0.015, "sharpe": 0.9},
+                              "ranging": {"total_return": 0.003, "sharpe": 0.2}},
     })
     loaded = read_status()
     assert loaded is not None and loaded["inst"] == "BTC-USDT-SWAP"
@@ -147,5 +177,6 @@ if __name__ == "__main__":
     msg = format_telegram()
     print(msg)
     assert "XGBoost AUC: 0.612" in msg
-    assert "Trades: 1284" in msg
+    assert "Trades: 341" in msg
+    assert "Holdout (never seen in training" in msg
     print("\n  PASS")
