@@ -19,6 +19,7 @@ Run:
 """
 
 import json
+import sys
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -542,6 +543,20 @@ def _sized_plan(entry, chg4h, score, scfg):
 # --------------------------------------------------------------------------- #
 # Command handling
 # --------------------------------------------------------------------------- #
+def _alpha_status_message():
+    """Reads alpha_ml/status.py's persisted training/backtest status. Lazy,
+    path-scoped import so the live bot never needs xgboost/torch installed
+    just to answer /alpha_status — status.py itself is stdlib-only."""
+    try:
+        alpha_ml_dir = str(Path(__file__).with_name("alpha_ml"))
+        if alpha_ml_dir not in sys.path:
+            sys.path.insert(0, alpha_ml_dir)
+        from status import format_telegram
+        return format_telegram()
+    except Exception as e:  # noqa: BLE001 - report cleanly, never crash the bot over this
+        return f"⚠️ Alpha ML status unavailable: {e}"
+
+
 def handle_command(text, cfg, ack=None):
     """Return the reply for an inbound Telegram message.
 
@@ -569,6 +584,7 @@ def handle_command(text, cfg, ack=None):
             "(a.k.a. BTCDOM), <code>USDT.D</code>, <code>DXY</code>\n"
             "  regime context only — derived indices, so no sized plan\n"
             "• <code>/status</code> — what I'm watching\n"
+            "• <code>/alpha_status</code> — phase-1 XGBoost + phase-2 DDQN training/backtest progress\n"
             "• <code>/help</code> — this message\n\n"
             "I also push OI-flip and funding-flip alerts automatically."
         )
@@ -604,6 +620,8 @@ def handle_command(text, cfg, ack=None):
             f"top {of.get('universe_top_n', 40)} by volume)\n"
             f"Quote filter: {quote_filter}"
         )
+    if cmd in ("alpha_status", "alpha"):
+        return _alpha_status_message()
 
     named_cmds = ("analyze", "profile", "regime")
     if cmd in named_cmds:
