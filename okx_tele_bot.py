@@ -19,6 +19,7 @@ Run:
 """
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -32,6 +33,9 @@ from macro_feeds import META as MACRO_META, macro_candles, resolve_macro
 from market_profile import build_tpo, build_tpo_profile, mean_reversion, regime
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
+# Scan state for --once runs. Small (a few KB), unlike the news SQLite blob, so
+# committing it back from CI each run stays cheap.
+STATE_PATH = Path(__file__).with_name("okx_scan_state.json")
 OKX_BASE = "https://www.okx.com"
 TG_BASE = "https://api.telegram.org"
 USER_AGENT = "okx-tele-bot/1.0"
@@ -61,11 +65,29 @@ def regime_bias(label):
 # Config / HTTP helpers
 # --------------------------------------------------------------------------- #
 def load_config():
-    with open(CONFIG_PATH, encoding="utf-8") as f:
-        cfg = json.load(f)
-    if str(cfg.get("telegram_bot_token", "")).startswith("PUT_YOUR"):
+    """Config from config.json, or from the environment when it is absent.
+
+    CI has no config.json (it is gitignored, and secrets must not be committed),
+    so GitHub Actions supplies TG_BOT_TOKEN/TG_CHAT_ID instead and the rest
+    falls back to config.example.json's defaults.
+    """
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            cfg = json.load(f)
+    else:
+        example = Path(__file__).with_name("config.example.json")
+        cfg = json.loads(example.read_text(encoding="utf-8")) if example.exists() else {}
+
+    # Environment always wins, so CI never depends on a committed secret.
+    if os.environ.get("TG_BOT_TOKEN"):
+        cfg["telegram_bot_token"] = os.environ["TG_BOT_TOKEN"]
+    if os.environ.get("TG_CHAT_ID"):
+        cfg["telegram_chat_id"] = os.environ["TG_CHAT_ID"]
+
+    token = str(cfg.get("telegram_bot_token", ""))
+    if not token or token.startswith(("PUT_YOUR", "REPLACE_WITH")):
         raise SystemExit(
-            f"Edit {CONFIG_PATH} first: fill in telegram_bot_token and telegram_chat_id."
+            f"No Telegram token: set TG_BOT_TOKEN, or fill in {CONFIG_PATH}."
         )
     return cfg
 
@@ -674,6 +696,31 @@ class FlipScanner:
         self.prev_funding = {}     # instId -> funding rate
         self.last_alert = {}       # instId -> ts
 
+    # State lives in memory for the long-running process, but a --once run is a
+    # fresh process every time: with empty prev_oi there is nothing to compare
+    # against, so no flip would ever be detected. Persist it between runs.
+    STATE_KEYS = ("prev_oi", "prev_price", "prev_regime", "prev_funding", "last_alert")
+
+    def load_state(self, path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                blob = json.load(f)
+        except (OSError, ValueError):
+            return False
+        for key in self.STATE_KEYS:
+            saved = blob.get(key)
+            if isinstance(saved, dict):
+                setattr(self, key, saved)
+        return True
+
+    def save_state(self, path):
+        blob = {k: getattr(self, k) for k in self.STATE_KEYS}
+        blob["saved_at"] = datetime.now(timezone.utc).isoformat()
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(blob, f, indent=1, default=str)
+        os.replace(tmp, path)   # atomic, so a killed run cannot leave a half file
+
     def due(self, now):
         return self.enabled and (now - self.last_scan) >= self.interval
 
@@ -745,6 +792,50 @@ class FlipScanner:
 # --------------------------------------------------------------------------- #
 # Main loop
 # --------------------------------------------------------------------------- #
+def _serve_pending(token, cfg, offset=0):
+    """Handle every queued Telegram update once, and return the next offset."""
+    for upd in tg_get_updates(token, offset, timeout=0):
+        offset = upd["update_id"] + 1
+        msg = upd.get("message") or upd.get("channel_post")
+        if not msg:
+            continue
+        origin = str(msg["chat"]["id"])
+        reply = handle_command(
+            msg.get("text", ""), cfg, ack=lambda t, c=origin: tg_send(token, c, t)
+        )
+        if reply:
+            if isinstance(reply, dict) and reply.get("type") == "photo":
+                tg_send_photo(token, origin, reply["png"], reply["caption"])
+            else:
+                tg_send(token, origin, reply)
+    return offset
+
+
+def run_once():
+    """One scheduled pass: answer queued commands, run one scan, exit.
+
+    For GitHub Actions/cron. Telegram drops updates once they are confirmed by
+    a getUpdates call with a higher offset, so the final confirm below is what
+    stops the next run from replaying the same commands — no offset file needed.
+    """
+    cfg = load_config()
+    token = cfg["telegram_bot_token"]
+    chat_id = cfg["telegram_chat_id"]
+
+    scanner = FlipScanner(cfg)
+    had_state = scanner.load_state(STATE_PATH)
+    print(f"run-once: previous scan state {'loaded' if had_state else 'not found (first run: baseline only)'}")
+
+    offset = _serve_pending(token, cfg)
+    if offset:
+        tg_get_updates(token, offset, timeout=0)   # confirm -> Telegram discards
+
+    if scanner.enabled:
+        scanner.scan(token, chat_id)
+    scanner.save_state(STATE_PATH)
+    print(f"run-once: done, tracking {len(scanner.prev_oi)} instruments")
+
+
 def main():
     cfg = load_config()
     token = cfg["telegram_bot_token"]
@@ -791,4 +882,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--once" in sys.argv:
+        run_once()
+    else:
+        main()
