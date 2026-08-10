@@ -34,3 +34,39 @@ jobs:
     - name: Dry-run config validation
       run: |
         python -c "import json; json.load(open('config.example.json'))"
+
+    # The bot's own suite. Network-free, runs in seconds, and needs nothing
+    # beyond requirements.txt. test_api.py is deliberately excluded — it is a
+    # live OKX probe script, not a test, and would make CI depend on an
+    # exchange being reachable.
+    - name: Test the bot
+      run: pytest test_okx_tele_bot.py -q
+
+  # Split out because the research pipeline needs numpy/pandas/sklearn/xgboost/
+  # torch, which the live bots never install (see alpha_ml/requirements.txt).
+  # One Python version is enough — this guards logic, not compatibility.
+  alpha-ml:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+        cache: pip
+
+    - name: Install alpha_ml dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        # CPU wheel explicitly: the default index can pull a multi-GB CUDA
+        # build, and the runner has no GPU.
+        pip install torch --index-url https://download.pytorch.org/whl/cpu
+        pip install "numpy>=1.26" "pandas>=2.1" "scikit-learn>=1.4" "xgboost>=2.0"
+        pip install pytest
+
+    - name: Test the research pipeline
+      # Covers the backtest engine's accounting, that stops actually bind, that
+      # no strategy can profit on a random walk (the lookahead guard), and that
+      # no self-test can publish itself as a real result.
+      run: pytest test_alpha_ml.py -q
