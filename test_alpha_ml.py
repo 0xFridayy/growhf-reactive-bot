@@ -266,16 +266,32 @@ class TestStatus:
 
     def test_format_telegram_includes_key_metrics(self):
         msg = format_telegram({
-            "inst": "BTC-USDT-SWAP", "bar": "5m", "xgb_auc": 0.61, "xgb_acc": 0.55,
-            "ddqn_episodes": 100, "ddqn_avg_reward": 0.01,
-            "bt_total_return": 0.05, "bt_sharpe": 1.5, "bt_sortino": 2.0,
-            "bt_max_drawdown": -0.03, "bt_profit_factor": 1.4, "bt_trade_count": 50,
-            "bt_win_rate": 0.5, "bt_turnover": 100.0, "bt_fees_paid": 0.01,
-            "bt_gated_entries": 3, "ts_utc": "2026-01-01T00:00:00+00:00",
+            "inst": "BTC-USDT-SWAP", "bar": "5m", "search_frac": 0.7,
+            "xgb_auc": 0.61, "xgb_acc": 0.55,
+            "ddqn_episodes": 100, "ddqn_avg_reward": 0.01, "overfit_flag": False,
+            "bt_search_total_return": 0.08, "bt_search_sharpe": 2.0, "bt_search_sortino": 2.5,
+            "bt_search_max_drawdown": -0.04, "bt_search_profit_factor": 1.6,
+            "bt_search_trade_count": 80, "bt_search_win_rate": 0.55,
+            "bt_search_turnover": 150.0, "bt_search_fees_paid": 0.02, "bt_search_gated_entries": 5,
+            "bt_holdout_total_return": 0.05, "bt_holdout_sharpe": 1.5, "bt_holdout_sortino": 2.0,
+            "bt_holdout_max_drawdown": -0.03, "bt_holdout_profit_factor": 1.4,
+            "bt_holdout_trade_count": 50, "bt_holdout_win_rate": 0.5,
+            "bt_holdout_turnover": 100.0, "bt_holdout_fees_paid": 0.01, "bt_holdout_gated_entries": 3,
+            "ts_utc": "2026-01-01T00:00:00+00:00",
         })
         assert "BTC-USDT-SWAP" in msg
         assert "XGBoost AUC: 0.610" in msg
         assert "Trades: 50" in msg
+
+    def test_format_telegram_flags_overfit(self):
+        msg = format_telegram({
+            "inst": "BTC-USDT-SWAP", "bar": "5m", "search_frac": 0.7,
+            "xgb_auc": 0.61, "xgb_acc": 0.55, "ddqn_episodes": 100, "ddqn_avg_reward": 0.01,
+            "overfit_flag": True,
+            "bt_search_sharpe": 1.68, "bt_holdout_sharpe": -0.65,
+            "ts_utc": "2026-01-01T00:00:00+00:00",
+        })
+        assert "Overfit warning" in msg
 
 
 if __name__ == "__main__":
