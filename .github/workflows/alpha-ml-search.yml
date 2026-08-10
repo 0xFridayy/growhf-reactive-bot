@@ -15,6 +15,10 @@ name: alpha_ml strategy search
 # Each day samples a different slice of the grid (the seed comes from the date)
 # and pulls candles that did not exist yesterday, so the search keeps covering
 # new ground instead of re-confirming the same winner against the same bars.
+#
+# Runs at 20:00 WIB daily. GitHub queues scheduled jobs rather than guaranteeing
+# them, so expect the message a few minutes late under load — and occasionally
+# not at all, which is a known Actions behavior, not a failure here.
 
 on:
   workflow_dispatch:
@@ -35,8 +39,9 @@ on:
         description: "Holdout Sharpe you want before it reports SATISFIED"
         default: "1.0"
   schedule:
-    # Daily, 21:00 UTC (04:00 WIB) — after the US session closes.
-    - cron: "0 21 * * *"
+    # Daily, 20:00 WIB. Actions cron is UTC-only and WIB is a fixed UTC+7 with
+    # no DST, so 13:00 UTC holds year-round — no seasonal drift to correct.
+    - cron: "0 13 * * *"
 
 permissions:
   contents: write
