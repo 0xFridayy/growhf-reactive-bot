@@ -89,9 +89,18 @@ def format_telegram(status=None):
     """Telegram-ready HTML status message (matches okx_tele_bot.py's parse_mode)."""
     status = status if status is not None else read_status()
     if status is None:
+        # Deliberately points at Actions, not at this host: training needs
+        # torch/xgboost/sklearn, which the live bot never installs (that's the
+        # whole reason this module is stdlib-only). Telling you to run it here
+        # would just produce an ImportError.
         return ("🤖 <b>Alpha ML status</b>\n"
-                "No training run yet. Kick one off with "
-                "<code>py alpha_ml/train.py --inst BTC-USDT-SWAP --bar 5m</code>.")
+                "No training run yet.\n\n"
+                "Training runs on GitHub Actions, not on this machine — "
+                "start one from the repo's <b>Actions</b> tab → "
+                "<b>alpha_ml training</b> → <b>Run workflow</b>. "
+                "It reports back here when it finishes.\n\n"
+                "Meanwhile <code>/alpha_search</code> has the daily entry/exit "
+                "strategy results, which run separately.")
 
     when = "n/a"
     ts_utc = status.get("ts_utc")
