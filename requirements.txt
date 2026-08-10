@@ -1,2 +1,9 @@
 requests>=2.31.0
 python-dotenv>=1.0.0
+websocket-client>=1.7.0
+matplotlib>=3.8.0
+
+# Windows ships no IANA tz database, so stdlib zoneinfo needs this. Without it
+# ZoneInfo("Asia/Jakarta") raises at import in alpha_ml/status.py and the
+# nlp-macro-event-bot modules. Harmless (unused) on Linux hosts.
+tzdata>=2024.1

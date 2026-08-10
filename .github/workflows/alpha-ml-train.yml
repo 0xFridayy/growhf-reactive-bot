@@ -1,0 +1,143 @@
+name: alpha_ml training
+
+# Phase-1 XGBoost + phase-2 DDQN training on GitHub's runners.
+#
+# This is a batch job, which is what Actions is actually for — unlike the
+# Telegram bot, which needs a persistent process and stays on the local PC.
+# Public repo => unlimited free minutes, and the runner has 4 vCPU / 16 GB,
+# far more than the bot host has.
+#
+# The runner is also outside the local ISP filter that hijacks IPv4 to
+# www.okx.com, so OHLCV fetches work here without any IPv6 workaround.
+#
+# Results reach the local bot's /alpha_status by committing the status file
+# back to the repo; `git pull` on the PC picks it up. Trained models are far
+# too big for git, so they are uploaded as build artifacts instead.
+
+on:
+  workflow_dispatch:
+    inputs:
+      inst:
+        description: "Instrument"
+        default: "BTC-USDT-SWAP"
+      bar:
+        description: "Candle size"
+        default: "5m"
+      bars:
+        description: "How many bars to train on"
+        default: "5000"
+      ddqn_episodes:
+        description: "DDQN episodes (blank = train.py default)"
+        default: ""
+  schedule:
+    # Weekly retrain, Sunday 20:00 UTC (Mon 03:00 WIB).
+    - cron: "0 20 * * 0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: alpha-ml-train
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    # A 5000-bar DDQN run is slow; well under the 6h ceiling but not quick.
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps (CPU-only torch)
+        run: |
+          pip install -r requirements.txt
+          # The default torch wheel can pull a multi-GB CUDA build; the runner
+          # has no GPU, so take the CPU index explicitly. alpha_ml's own
+          # requirements file recommends exactly this.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "numpy>=1.26" "pandas>=2.1" "scikit-learn>=1.4" "xgboost>=2.0"
+
+      - name: Sanity check the pipeline before the long run
+        run: python alpha_ml/train.py --selftest
+
+      - name: Train
+        id: train
+        run: |
+          ARGS="--inst '${{ inputs.inst || 'BTC-USDT-SWAP' }}' --bar '${{ inputs.bar || '5m' }}' --bars '${{ inputs.bars || 5000 }}'"
+          if [ -n "${{ inputs.ddqn_episodes }}" ]; then
+            ARGS="$ARGS --ddqn-episodes ${{ inputs.ddqn_episodes }}"
+          fi
+          echo "train.py $ARGS"
+          eval python alpha_ml/train.py $ARGS
+
+      - name: Upload trained models
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: alpha-ml-models
+          path: alpha_ml/models/
+          retention-days: 30
+          if-no-files-found: warn
+
+      # Both of the steps below publish the status file. They must NOT run when
+      # Train failed: the sanity-check step above leaves a synthetic SELFTEST
+      # status on disk, and an `if: always()` here would broadcast those fake
+      # numbers to Telegram and commit them as the latest checkpoint. On
+      # failure, say so instead and leave the last real status untouched.
+      - name: Report result to Telegram
+        if: always() && steps.train.outcome == 'success'
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          if [ -z "$TG_BOT_TOKEN" ]; then echo "no TG_BOT_TOKEN set, skipping"; exit 0; fi
+          python - <<'PY'
+          import os, sys, urllib.parse, urllib.request
+          sys.path.insert(0, "alpha_ml")
+          try:
+              from status import format_telegram
+              text = format_telegram()
+          except Exception as e:
+              text = f"⚠️ alpha_ml training finished but status is unreadable: {e}"
+          body = urllib.parse.urlencode({
+              "chat_id": os.environ["TG_CHAT_ID"],
+              "text": text,
+              "parse_mode": "HTML",
+          }).encode()
+          req = urllib.request.Request(
+              f"https://api.telegram.org/bot{os.environ['TG_BOT_TOKEN']}/sendMessage",
+              data=body)
+          with urllib.request.urlopen(req, timeout=30) as r:
+              print("telegram:", r.status)
+          PY
+
+      - name: Tell Telegram the run failed
+        if: failure()
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          if [ -z "$TG_BOT_TOKEN" ]; then echo "no TG_BOT_TOKEN set, skipping"; exit 0; fi
+          TEXT="⚠️ alpha_ml training run FAILED (${GITHUB_WORKFLOW} #${GITHUB_RUN_NUMBER}). Last good /alpha_status is unchanged. Logs: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl -sS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+               --data-urlencode "chat_id=${TG_CHAT_ID}" \
+               --data-urlencode "text=${TEXT}" >/dev/null
+
+      - name: Commit status back so the local bot's /alpha_status sees it
+        if: always() && steps.train.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add alpha_ml/alpha_status.json alpha_ml/alpha_status_history.csv 2>/dev/null || true
+          git diff --cached --quiet && { echo "no status change"; exit 0; }
+          git commit -m "chore: alpha_ml training status [skip ci]"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            git fetch origin "${GITHUB_REF_NAME}"
+            git rebase "origin/${GITHUB_REF_NAME}" || { git rebase --abort; break; }
+          done

@@ -10,6 +10,13 @@ Reactive volume + price spike detector for OKX & Hyperliquid perpetuals. Execute
 - **Small-account ready**: Configurable for $280–$300 starting capital
 - **Daemon mode**: Runs 24/7 with auto-restart on crash
 - **Telegram alerts**: Real-time spike notifications + execution confirmations
+- **Macro gauges**: `/analyze BTC.D` (a.k.a. BTCDOM), `USDT.D`, `DXY` — none is an OKX
+  perp, so they're derived (dominance from CoinGecko supplies × live OKX prices; DXY
+  from Yahoo, ~10 min delayed) and returned as candles the normal TPO/regime analytics
+  consume. Regime context only — never a sized plan. See `macro_feeds.py`.
+- **Market bias**: `/bias` returns a scored TOTAL3 / BTC.D / USDT.D + macro read on
+  demand, and the same read auto-posts hourly 19:00–00:00 local. See
+  [Market bias](#market-bias-bias) below.
 
 ## Quick Start
 
@@ -165,6 +172,47 @@ Currently, bot runs **signals-only mode** (monitoring, no execution). Execution 
 **High CPU usage:**
 - Reduce `poll_interval_seconds` backoff
 - Check if system is overloaded
+
+## Market bias (`/bias`)
+
+`bias_telegram.py` scores overall crypto risk appetite from **TOTAL3**, **BTC
+dominance**, **USDT dominance** and a macro cross-asset panel (DXY / VIX / ES /
+US10Y) plus CoinDesk + Cointelegraph headlines. Two ways to get it:
+
+| | |
+|---|---|
+| **On demand** | text `/bias` to the bot (handled by `okx_tele_bot.py`) |
+| **Automatic** | task `Crypto-Bias-Telegram`, hourly 19:00–00:00 local |
+
+Both call `bias_telegram.render_bias()` — one source of truth, so the on-demand
+and scheduled messages can never drift apart. Stdlib only, no extra deps.
+
+**Scoring.** Six components each vote in `[-2, +2]`, positive = risk-on for
+alts: TOTAL3 momentum, TOTAL3 position in its 72h range, BTC.D trend, USDT.D
+trend, alts-vs-BTC, BTC trend. The mean maps to `-100..+100` and a label
+(BULLISH / LEAN BULLISH / NEUTRAL / LEAN BEARISH / BEARISH).
+
+The message also states the **divergence read** explicitly, because the
+composite score alone can mislead: when BTC.D is rising while alts lag, "risk-on"
+is concentrating in BTC and TOTAL3 strength is borrowed. That case prints a
+warning rather than letting a high headline score imply alts are bid.
+
+**Method caveat — read this before trusting the deltas.** CoinGecko's free tier
+returns only a *current* dominance snapshot, no history. The 4h/24h/72h changes
+in BTC.D / USDT.D / TOTAL3 are **reconstructed**: anchored on the live snapshot
+and propagated backwards along hourly OKX price paths with supply held fixed
+(over a 3–5 day window dominance moves are price-driven, not supply-driven).
+Accurate for that window, but it is a model, not measured tape. Every run
+appends a real snapshot to `bias_history.csv` (gitignored) so genuine measured
+history accumulates for cross-checking.
+
+`TOTAL3` follows the TradingView definition (`TOTAL - BTC - ETH`, which includes
+stablecoins); `TOTAL3X` excludes them and is what the scoring actually uses,
+since that is the real alt risk-appetite number.
+
+Setup and scheduling live in [`deploy/okx_windows_scheduler.md`](deploy/okx_windows_scheduler.md).
+Run `python set_tg_commands.py` once to register the command list with Telegram
+so typing `/` autocompletes.
 
 ## License
 

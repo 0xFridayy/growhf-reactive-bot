@@ -1,0 +1,245 @@
+# Run the OKX Bots Locally on Windows (Task Scheduler)
+
+Run both bots 24/7 on your own PC — no cloud droplet, no monthly cost. The only
+requirement is that **the PC is powered on and online** when you want alerts
+(a laptop that sleeps won't send alerts while asleep).
+
+You run **two** bots as **two** scheduled tasks, both sharing the same
+`config.json` and the same Telegram bot/chat:
+
+| Task | Script | Does |
+|------|--------|------|
+| `OKX-Bot`   | `okx_tele_bot.py`      | `/analyze` commands + OI/funding-flip alerts |
+| `OKX-Spike` | `okx_perp_screener.py` | reactive price + volume spike alerts |
+
+Only `OKX-Bot` listens for Telegram commands, so there's no conflict on the
+shared bot token.
+
+A third, **scheduled** (not long-running) task is documented at the bottom of
+this file: `Crypto-Bias-Telegram` — see [Hourly bias job](#hourly-bias-job).
+
+---
+
+## Step 0: Install
+
+1. Install **Python 3.10+** from <https://python.org> — tick **"Add Python to PATH"**.
+2. Double-click **`deploy\install_okx_windows.bat`**. It builds the venv, installs
+   dependencies, and creates `run_okx_bot.bat` and `run_okx_spike.bat` in the
+   repo folder.
+3. Edit **`config.json`** — set `telegram_bot_token` and `telegram_chat_id`.
+4. Test each bot by double-clicking `run_okx_bot.bat` (you should get
+   "OKX Telegram bot online" in Telegram) and `run_okx_spike.bat`. Close the
+   windows once you've confirmed they work.
+
+---
+
+## Step 1: Create the hidden launchers (no console window)
+
+In the **repo root** (same folder as the `.py` files), create two `.vbs` files.
+These launch the bots without a visible terminal window.
+
+> **The third argument to `objShell.Run` must be `True` (wait for completion), not `False`.**
+> `False` makes `wscript.exe` fire-and-forget: it launches the bot and exits within
+> a second, so Task Scheduler thinks the task finished immediately and has no way
+> to know the bot is still running. Combined with the 5-minute repeat trigger below,
+> that silently launches a **new duplicate bot every 5 minutes forever** — "Do not
+> start a new instance" never kicks in because Scheduler never sees an instance
+> still running. `True` makes `wscript.exe` block until the bot process exits, so
+> Scheduler correctly shows the task as "Running" the whole time and the
+> concurrency/restart settings actually work.
+
+`run_okx_bot_hidden.vbs`:
+
+```vbs
+Set objFSO = CreateObject("Scripting.FileSystemObject")
+strPath = objFSO.GetParentFolderName(WScript.ScriptFullName)
+Set objShell = CreateObject("WScript.Shell")
+objShell.Run chr(34) & strPath & "\run_okx_bot.bat" & chr(34), 0, True
+```
+
+`run_okx_spike_hidden.vbs`:
+
+```vbs
+Set objFSO = CreateObject("Scripting.FileSystemObject")
+strPath = objFSO.GetParentFolderName(WScript.ScriptFullName)
+Set objShell = CreateObject("WScript.Shell")
+objShell.Run chr(34) & strPath & "\run_okx_spike.bat" & chr(34), 0, True
+```
+
+`run_okx_orderflow_hidden.vbs` (optional third bot — live order-flow logger,
+see `okx_orderflow_logger.py`; silent, no Telegram alerts, logs to `orderflow.db`):
+
+```vbs
+Set objFSO = CreateObject("Scripting.FileSystemObject")
+strPath = objFSO.GetParentFolderName(WScript.ScriptFullName)
+Set objShell = CreateObject("WScript.Shell")
+objShell.Run chr(34) & strPath & "\run_okx_orderflow.bat" & chr(34), 0, True
+```
+
+---
+
+## Step 2: Create the scheduled tasks
+
+Do this **twice** — once for each bot. Open Task Scheduler (`Win+R` →
+`taskschd.msc`), then **Create Task** (not "Basic Task").
+
+### Task 1 — OKX-Bot
+
+**General tab**
+- Name: `OKX-Bot`
+- Select **"Run whether user is logged on or not"**
+- Check **"Run with highest privileges"**
+
+**Triggers tab** → New
+- Begin the task: **At startup**
+- Check **"Repeat task every 5 minutes"**, Duration: **Indefinitely**
+  (this restarts the bot if it ever crashes)
+
+**Actions tab** → New
+- Action: **Start a program**
+- Program/script: `C:\Windows\System32\wscript.exe`
+- Add arguments: `"C:\path\to\repo\run_okx_bot_hidden.vbs"`
+- Start in: `C:\path\to\repo`
+
+**Conditions tab**
+- Uncheck **"Start the task only if the computer is on AC power"**
+- Uncheck **"Stop if the computer switches to battery power"**
+
+**Settings tab**
+- Check **"Run task as soon as possible after a scheduled start is missed"**
+- Check **"If the task fails, restart every 1 minute"**, up to 3 attempts
+- **"Do not start a new instance"** as the concurrency rule (so it never
+  double-launches)
+
+Click OK.
+
+### Task 2 — OKX-Spike
+
+Repeat exactly the same steps with:
+- Name: `OKX-Spike`
+- Arguments: `"C:\path\to\repo\run_okx_spike_hidden.vbs"`
+
+> Replace `C:\path\to\repo` with your real path, e.g.
+> `C:\Users\You\growhf-reactive-bot`.
+
+---
+
+## Step 3: Start them now
+
+In Task Scheduler, right-click each task → **Run**. Within a few seconds you
+should see the "online" message in Telegram and, on the next scan, any
+OI/funding-flip or spike alerts.
+
+---
+
+## Managing the bots
+
+**Are they running?**
+```powershell
+Get-Process python -ErrorAction SilentlyContinue | Select-Object Id, StartTime
+```
+
+**Stop one** (Task Scheduler will restart it on its 5-min trigger, so disable
+the task first if you want it to stay down):
+```powershell
+# Disable so it doesn't auto-restart, then kill:
+Get-ScheduledTask -TaskName OKX-Bot | Disable-ScheduledTask
+Get-Process python | Where-Object { $_.Path -like "*venv*" } | Stop-Process -Force
+```
+
+**Update the bots** (after `git pull`): just let the 5-minute trigger restart
+them, or right-click each task → **End**, then **Run**.
+
+**Remove:** Task Scheduler → right-click task → **Delete**.
+
+---
+
+## Troubleshooting
+
+- **No "online" message** → run `run_okx_bot.bat` directly in a terminal and
+  read the error. Usually a bad token/chat_id in `config.json`, or Python not
+  on PATH.
+- **`409 Conflict` from Telegram** → two processes are polling `getUpdates` on
+  the same token. Only `okx_tele_bot.py` should do that — make sure you didn't
+  start two copies of `OKX-Bot`.
+- **Alerts stop overnight** → the PC slept. Set the power plan to never sleep,
+  or run it on an always-on machine (an old PC, a mini-PC, or a Raspberry Pi).
+
+---
+
+## Note on the GitHub auto-deploy
+
+The `.github/workflows/deploy.yml` and `install_okx_bot.sh` in this repo are for
+a **Linux server** deployment. If you're running locally on Windows you don't
+need them or any GitHub secrets — to update, just `git pull` and let Task
+Scheduler restart the bots.
+
+---
+
+## Hourly bias job
+
+`Crypto-Bias-Telegram` is different from the two bots above: it is **one-shot**,
+not long-running. It fires, posts a TOTAL3 / BTC.D / USDT.D + macro read to
+Telegram, and exits. So it uses **six daily time triggers** (19:00, 20:00,
+21:00, 22:00, 23:00, 00:00) instead of an at-startup + repeat trigger.
+
+| | |
+|---|---|
+| Script | `bias_telegram.py` |
+| Launcher | `run_bias.bat` → `run_bias_hidden.vbs` |
+| History | `bias_history.csv` (gitignored) · log `bias_telegram.log` |
+| Deps | stdlib only — no `pip install` needed |
+
+Registered with (already done — re-run to change the times):
+
+```powershell
+$repo='C:\Users\jason\Documents\GitHub\growhf-reactive-bot'
+$name='Crypto-Bias-Telegram'
+try { Unregister-ScheduledTask -TaskName $name -Confirm:$false } catch {}
+$trigs=@(); foreach($t in @('19:00','20:00','21:00','22:00','23:00','00:00')){
+  $trigs += New-ScheduledTaskTrigger -Daily -At $t }
+$act  = New-ScheduledTaskAction -Execute 'C:\Windows\System32\wscript.exe' `
+        -Argument "`"$repo\run_bias_hidden.vbs`"" -WorkingDirectory $repo
+$set  = New-ScheduledTaskSettingsSet -StartWhenAvailable `
+        -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+$prin = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
+        -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName $name -Action $act -Trigger $trigs `
+        -Settings $set -Principal $prin
+```
+
+**Test / manage:**
+
+```powershell
+Start-ScheduledTask  -TaskName Crypto-Bias-Telegram   # fire now
+Get-ScheduledTaskInfo -TaskName Crypto-Bias-Telegram  # LastTaskResult 0 = ok
+Disable-ScheduledTask -TaskName Crypto-Bias-Telegram  # pause
+Unregister-ScheduledTask -TaskName Crypto-Bias-Telegram -Confirm:$false  # remove
+```
+
+**Caveat:** `LogonType Interactive` means it only fires while you are logged in.
+To run logged-out, re-register with `-LogonType Password` (Task Scheduler will
+prompt for your Windows password).
+
+**Method caveat:** CoinGecko's free tier returns only a *current* dominance
+snapshot. The 4h/24h/72h deltas on BTC.D / USDT.D / TOTAL3 are **reconstructed**
+— anchored on the live snapshot and propagated back along hourly OKX price paths
+with supply held fixed. Accurate over a 3-day window (dominance moves are
+price-driven, not supply-driven) but it is a model, not measured tape. Each run
+appends a real snapshot to `bias_history.csv` so measured history accumulates.
+
+---
+
+## Mac / Linux instead?
+
+Not on Windows? On macOS/Linux the simplest local equivalent is a background
+run inside a `tmux`/`screen` session, or a user-level `systemd --user` service
+on Linux. The two `run_*` commands are just:
+
+```bash
+cd /path/to/repo
+python -m venv venv && source venv/bin/activate && pip install -r requirements.txt
+python okx_tele_bot.py      # in one session
+python okx_perp_screener.py # in another
+```

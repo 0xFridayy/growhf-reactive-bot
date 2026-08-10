@@ -1,0 +1,147 @@
+name: alpha_ml strategy search
+
+# Tries every entry/exit strategy in alpha_ml/strategies.py against fresh OKX
+# candles, every day, and reports what won and whether it clears the bar set in
+# DEFAULT_TARGETS. Keeps running daily until one does.
+#
+# Cheap compared to the weekly DDQN retrain (alpha-ml-train.yml): no torch, no
+# RL, just a few hundred vectorized backtests — minutes, not hours.
+#
+# Results reach the local bot by committing them back to the repo:
+#   alpha_ml/search_status.json    -> /alpha_search
+#   alpha_ml/champion_trades.csv   -> /alpha_trades
+#   alpha_ml/leaderboard.csv       -> the running record across days
+#
+# Each day samples a different slice of the grid (the seed comes from the date)
+# and pulls candles that did not exist yesterday, so the search keeps covering
+# new ground instead of re-confirming the same winner against the same bars.
+
+on:
+  workflow_dispatch:
+    inputs:
+      inst:
+        description: "Instrument"
+        default: "BTC-USDT-SWAP"
+      bar:
+        description: "Candle size"
+        default: "5m"
+      bars:
+        description: "How many bars to search over"
+        default: "20000"
+      max_configs:
+        description: "Strategies to try (blank = the whole grid)"
+        default: ""
+      target_sharpe:
+        description: "Holdout Sharpe you want before it reports SATISFIED"
+        default: "1.0"
+  schedule:
+    # Daily, 21:00 UTC (04:00 WIB) — after the US session closes.
+    - cron: "0 21 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: alpha-ml-search
+  cancel-in-progress: false
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        # No torch here on purpose — the search never touches the DDQN.
+        run: pip install "numpy>=1.26" "pandas>=2.1" "scikit-learn>=1.4" "xgboost>=2.0" requests
+
+      - name: Sanity check the engine before spending time on real data
+        run: |
+          python alpha_ml/strategies.py --selftest
+          python alpha_ml/search.py --selftest
+
+      - name: Search
+        id: search
+        run: |
+          ARGS="--inst '${{ inputs.inst || 'BTC-USDT-SWAP' }}' --bar '${{ inputs.bar || '5m' }}'"
+          ARGS="$ARGS --bars '${{ inputs.bars || 20000 }}'"
+          ARGS="$ARGS --target-sharpe '${{ inputs.target_sharpe || 1.0 }}'"
+          if [ -n "${{ inputs.max_configs }}" ]; then
+            ARGS="$ARGS --max-configs ${{ inputs.max_configs }}"
+          fi
+          echo "search.py $ARGS"
+          eval python alpha_ml/search.py $ARGS
+
+      - name: Upload the full trade log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: alpha-ml-search-${{ github.run_number }}
+          path: |
+            alpha_ml/search_status.json
+            alpha_ml/champion_trades.csv
+            alpha_ml/leaderboard.csv
+          retention-days: 30
+          if-no-files-found: warn
+
+      # Only on success: a failed search leaves whatever was on disk from the
+      # self-test step, and stale/synthetic results must never be published as
+      # today's answer. Same trap the training workflow used to fall into.
+      - name: Report to Telegram
+        if: always() && steps.search.outcome == 'success'
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          if [ -z "$TG_BOT_TOKEN" ]; then echo "no TG_BOT_TOKEN set, skipping"; exit 0; fi
+          python - <<'PY'
+          import os, sys, urllib.parse, urllib.request
+          sys.path.insert(0, "alpha_ml")
+          try:
+              from status import format_search_telegram
+              text = format_search_telegram()
+          except Exception as e:
+              text = f"⚠️ strategy search finished but the result is unreadable: {e}"
+          body = urllib.parse.urlencode({
+              "chat_id": os.environ["TG_CHAT_ID"],
+              "text": text,
+              "parse_mode": "HTML",
+          }).encode()
+          req = urllib.request.Request(
+              f"https://api.telegram.org/bot{os.environ['TG_BOT_TOKEN']}/sendMessage",
+              data=body)
+          with urllib.request.urlopen(req, timeout=30) as r:
+              print("telegram:", r.status)
+          PY
+
+      - name: Tell Telegram the search failed
+        if: failure()
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          if [ -z "$TG_BOT_TOKEN" ]; then echo "no TG_BOT_TOKEN set, skipping"; exit 0; fi
+          TEXT="⚠️ alpha_ml strategy search FAILED (run #${GITHUB_RUN_NUMBER}). Yesterday's /alpha_search is unchanged. Logs: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl -sS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+               --data-urlencode "chat_id=${TG_CHAT_ID}" \
+               --data-urlencode "text=${TEXT}" >/dev/null
+
+      - name: Commit results so the local bot can serve them
+        if: always() && steps.search.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add alpha_ml/search_status.json alpha_ml/champion_trades.csv alpha_ml/leaderboard.csv 2>/dev/null || true
+          git diff --cached --quiet && { echo "no change"; exit 0; }
+          git commit -m "chore: alpha_ml daily strategy search [skip ci]"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            git fetch origin "${GITHUB_REF_NAME}"
+            git rebase "origin/${GITHUB_REF_NAME}" || { git rebase --abort; break; }
+          done

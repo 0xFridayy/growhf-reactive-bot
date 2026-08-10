@@ -16,6 +16,7 @@ Candles come newest-first from the OKX API; helpers reverse to oldest-first.
 """
 
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 
 
 def _closes(candles):
@@ -39,20 +40,58 @@ class Profile:
     poc_dist_pct: float      # signed % distance of price above/below POC
 
 
-def build_tpo_profile(candles, num_buckets=50, value_area_frac=0.70):
-    """
-    Build a TPO (time-price-opportunity) profile. Each candle contributes one
-    TPO to every price bucket its [low, high] range overlaps. POC is the busiest
-    bucket; the value area expands out from POC (larger neighbour first) until it
-    covers value_area_frac of all TPOs.
-
-    Returns a Profile, or None if there isn't enough range/data to bin.
-    """
-    if len(candles) < 5:
+def _coerce_session_start(session_start=None, session=None):
+    """Normalize a session boundary to a UTC-aware datetime."""
+    if session_start is not None:
+        if isinstance(session_start, datetime):
+            dt = session_start
+        elif isinstance(session_start, date):
+            dt = datetime(session_start.year, session_start.month, session_start.day, tzinfo=timezone.utc)
+        else:
+            return None
+    elif session is not None:
+        if isinstance(session, datetime):
+            dt = session
+        elif isinstance(session, date):
+            dt = datetime(session.year, session.month, session.day, tzinfo=timezone.utc)
+        else:
+            return None
+    else:
         return None
-    highs = [float(c[2]) for c in candles]
-    lows = [float(c[3]) for c in candles]
-    last = float(candles[0][4])
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _filter_session(candles, session_start=None, session=None):
+    if not candles:
+        return []
+    start = _coerce_session_start(session_start=session_start, session=session)
+    if start is None:
+        return list(candles)
+
+    end = start + timedelta(days=1)
+    out = []
+    for c in candles:
+        try:
+            ts = int(c[0])
+        except (TypeError, ValueError, IndexError):
+            continue
+        dt = datetime.fromtimestamp(ts / 1000.0, tz=timezone.utc)
+        if start <= dt < end:
+            out.append(c)
+    return out
+
+
+def build_tpo(candles, session_start=None, session=None, num_buckets=50, value_area_frac=0.70):
+    """Build a TPO profile for a specific UTC session, or the full candle set if none is given."""
+    session_candles = _filter_session(candles, session_start=session_start, session=session)
+    if len(session_candles) < 5:
+        return None
+    highs = [float(c[2]) for c in session_candles]
+    lows = [float(c[3]) for c in session_candles]
+    last = float(session_candles[0][4])
     price_high = max(highs)
     price_low = min(lows)
     span = price_high - price_low
@@ -103,6 +142,10 @@ def build_tpo_profile(candles, num_buckets=50, value_area_frac=0.70):
     )
 
 
+def build_tpo_profile(candles, num_buckets=50, value_area_frac=0.70, session_start=None, session=None):
+    return build_tpo(candles, session_start=session_start, session=session, num_buckets=num_buckets, value_area_frac=value_area_frac)
+
+
 # --------------------------------------------------------------------------- #
 # Mean reversion
 # --------------------------------------------------------------------------- #
@@ -125,10 +168,23 @@ def mean_reversion(candles, lookback=20, z_trigger=2.0):
         return None
     window = closes[-lookback:] if len(closes) >= lookback else closes
     n = len(window)
-    mean = sum(window) / n
-    std = (sum((x - mean) ** 2 for x in window) / n) ** 0.5
-    last = closes[-1]
-    z = (last - mean) / std if std else 0.0
+    if n < 2:
+        return None
+
+    # Detrend the recent window so a steady up/down move does not look like an
+    # extreme mean-reversion event. We compare the current close to the residual
+    # dispersion around the recent linear trend.
+    first = window[0]
+    last = window[-1]
+    slope = (last - first) / (n - 1) if n > 1 else 0.0
+    expected = [first + slope * i for i in range(n)]
+    residuals = [close - expected[i] for i, close in enumerate(window)]
+    mean = sum(residuals) / n
+    std = (sum((x - mean) ** 2 for x in residuals) / n) ** 0.5
+    if std <= 1e-12:
+        z = 0.0
+    else:
+        z = (residuals[-1] - mean) / std
 
     if z >= z_trigger:
         signal, note = "fade-short", f"stretched {z:+.2f}σ above mean → expect reversion down"
@@ -140,11 +196,11 @@ def mean_reversion(candles, lookback=20, z_trigger=2.0):
         signal, note = "neutral", f"mild deviation ({z:+.2f}σ)"
 
     return MeanReversion(
-        mean=mean,
+        mean=first + slope * (n - 1),
         std=std,
         zscore=z,
-        upper=mean + 2 * std,
-        lower=mean - 2 * std,
+        upper=(first + slope * (n - 1)) + 2 * std,
+        lower=(first + slope * (n - 1)) - 2 * std,
         last=last,
         signal=signal,
         note=note,

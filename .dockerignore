@@ -1,0 +1,42 @@
+# Never ship secrets into an image layer — config.json is mounted at runtime.
+config.json
+config.local.json
+.env
+.env.local
+*.pem
+*.key
+
+# Local virtualenv / VCS / caches
+venv/
+.venv/
+env/
+ENV/
+.git/
+.github/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Windows-only launchers (baked absolute paths, useless in a container)
+run_*.bat
+run_*.vbs
+deploy/install_*.bat
+
+# Runtime artifacts — regenerated, or mounted as volumes
+logs/
+*.log
+alpha_ml/models/
+alpha_ml/data/
+alpha_ml/alpha_status.json
+alpha_ml/alpha_status_history.csv
+bias_history.csv
+.okx_perp_screener.lock
+
+# Heavy research deps are not installed in the bot image
+alpha_ml/requirements.txt
+
+# Docs
+*.md
+!README.md
