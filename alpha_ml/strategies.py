@@ -218,6 +218,65 @@ class RegimeRouterEntry(EntryRule):
         return "regime_router[ranging] -> " + self._mr.explain(df, i, direction)
 
 
+class ValueAreaBreakoutEntry(EntryRule):
+    """Volume-profile breakout: price sat inside the TPO value area last bar and
+    closes outside it (past VAH/VAL) this bar — the market has left balance.
+    Trades in the direction of the break; the opposite bet to PocFadeEntry,
+    which fades the same distance-from-POC read instead of following it."""
+    key = "va_breakout"
+
+    def __init__(self, min_dist=0.0):
+        super().__init__(min_dist=min_dist)
+
+    def directions(self, df):
+        in_va = self._col(df, "in_value_area")
+        poc = self._col(df, "poc_dist_pct")
+        prev_in_va = pd.Series(in_va).shift(1).to_numpy()
+        min_dist = self.params["min_dist"]
+        with np.errstate(invalid="ignore"):
+            broke_out = (prev_in_va == 1.0) & (in_va == 0.0) & (np.abs(poc) >= min_dist)
+            return np.where(broke_out & (poc > 0), 1.0,
+                    np.where(broke_out & (poc < 0), -1.0, 0.0))
+
+    def explain(self, df, i, direction):
+        poc = df["poc_dist_pct"].iat[i]
+        return (f"va_breakout: price left the value area this bar ({poc:+.2f}% from "
+                f"POC) after sitting inside it last bar — trading the break "
+                f"{'long' if direction > 0 else 'short'}")
+
+
+class ValueAreaReclaimEntry(EntryRule):
+    """Volume-profile reclaim: price pierced outside the TPO value area
+    (VAH/VAL) last bar and closes back inside it this bar — a failed breakout.
+    Trades in the direction of the re-entry, betting the rejection carries
+    through toward POC. The mirror of ValueAreaBreakoutEntry: that rule follows
+    a confirmed break, this one fades a failed one."""
+    key = "va_reclaim"
+
+    def __init__(self, min_dist=0.0):
+        super().__init__(min_dist=min_dist)
+
+    def directions(self, df):
+        in_va = self._col(df, "in_value_area")
+        poc = self._col(df, "poc_dist_pct")
+        prev_in_va = pd.Series(in_va).shift(1).to_numpy()
+        prev_poc = pd.Series(poc).shift(1).to_numpy()
+        min_dist = self.params["min_dist"]
+        with np.errstate(invalid="ignore"):
+            reclaimed = (prev_in_va == 0.0) & (in_va == 1.0) & (np.abs(prev_poc) >= min_dist)
+            # was below the value area (prev_poc < 0) and reclaimed up -> long;
+            # was above it (prev_poc > 0) and reclaimed down -> short.
+            return np.where(reclaimed & (prev_poc < 0), 1.0,
+                    np.where(reclaimed & (prev_poc > 0), -1.0, 0.0))
+
+    def explain(self, df, i, direction):
+        prev_poc = df["poc_dist_pct"].iat[i - 1] if i > 0 else float("nan")
+        side = "below" if prev_poc < 0 else "above"
+        return (f"va_reclaim: price was {prev_poc:+.2f}% from POC ({side} the value "
+                f"area) last bar, closed back inside this bar — trading the reclaim "
+                f"{'long' if direction > 0 else 'short'}")
+
+
 ENTRY_RULES = {
     "momentum": MomentumEntry,
     "breakout": BreakoutEntry,
@@ -225,6 +284,8 @@ ENTRY_RULES = {
     "volspike": VolSpikeEntry,
     "pocfade": PocFadeEntry,
     "regime_router": RegimeRouterEntry,
+    "va_breakout": ValueAreaBreakoutEntry,
+    "va_reclaim": ValueAreaReclaimEntry,
 }
 
 
@@ -632,6 +693,9 @@ def default_grid(prob_thresholds=(0.0, 0.55)):
     for d in (0.4, 0.8):
         entries.append(PocFadeEntry(dist=d))
     entries.append(RegimeRouterEntry(deadzone=0.15, z=1.5))
+    for d in (0.0, 0.5):
+        entries.append(ValueAreaBreakoutEntry(min_dist=d))
+        entries.append(ValueAreaReclaimEntry(min_dist=d))
 
     exit_sets = []
     for sl, tp in ((1.0, 1.0), (1.0, 2.0), (1.5, 3.0), (2.0, 2.0)):
