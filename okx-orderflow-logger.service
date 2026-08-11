@@ -1,0 +1,29 @@
+[Unit]
+Description=OKX order-flow tape logger (trades + book snapshots -> orderflow.db)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=alphaml
+Group=alphaml
+WorkingDirectory=/opt/alpha-ml
+Environment="PATH=/opt/alpha-ml/venv/bin"
+ExecStart=/opt/alpha-ml/venv/bin/python okx_orderflow_logger.py
+Restart=always
+RestartSec=10
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/alpha-ml
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=okx-orderflow-logger
+
+[Install]
+WantedBy=multi-user.target
