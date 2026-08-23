@@ -4,69 +4,69 @@
   "search_frac": 0.7,
   "xgb_auc": 0.5483096500070455,
   "xgb_acc": 0.5764053840063341,
-  "xgb_expectancy_bps": 15.09830121124934,
+  "xgb_expectancy_bps": 15.09830121124933,
   "ddqn_episodes": 60,
-  "ddqn_avg_reward": -0.0037517276032198016,
-  "overfit_flag": true,
-  "bt_search_total_return": 0.03826818107921384,
-  "bt_search_sharpe": 1.9861414921577916,
-  "bt_search_sortino": 2.2501119237988116,
-  "bt_search_max_drawdown": -0.22145684975418237,
-  "bt_search_profit_factor": 1.022278684922078,
-  "bt_search_trade_count": 249,
-  "bt_search_win_rate": 0.3493975903614458,
-  "bt_search_turnover": 497.0,
-  "bt_search_fees_paid": 0.24850000000000003,
-  "bt_search_gated_entries": 150,
-  "bt_holdout_total_return": -0.10932480420420626,
-  "bt_holdout_sharpe": -13.102654206330087,
-  "bt_holdout_sortino": -16.201269183301854,
-  "bt_holdout_max_drawdown": -0.13566526926316871,
-  "bt_holdout_profit_factor": 0.8669991823885691,
-  "bt_holdout_trade_count": 104,
-  "bt_holdout_win_rate": 0.2980769230769231,
-  "bt_holdout_turnover": 208.0,
-  "bt_holdout_fees_paid": 0.10400000000000001,
-  "bt_holdout_gated_entries": 87,
+  "ddqn_avg_reward": -0.0005824877264372255,
+  "overfit_flag": false,
+  "bt_search_total_return": -0.2881111272264115,
+  "bt_search_sharpe": -10.36988102656296,
+  "bt_search_sortino": -16.550626351054706,
+  "bt_search_max_drawdown": -0.5858754549937133,
+  "bt_search_profit_factor": 0.9212088214363493,
+  "bt_search_trade_count": 262,
+  "bt_search_win_rate": 0.3816793893129771,
+  "bt_search_turnover": 523.0,
+  "bt_search_fees_paid": 0.26150000000000007,
+  "bt_search_gated_entries": 5,
+  "bt_holdout_total_return": -0.12586714467423077,
+  "bt_holdout_sharpe": -10.52358125469343,
+  "bt_holdout_sortino": -16.71810159990169,
+  "bt_holdout_max_drawdown": -0.16689573628402474,
+  "bt_holdout_profit_factor": 0.9195626189493519,
+  "bt_holdout_trade_count": 119,
+  "bt_holdout_win_rate": 0.37815126050420167,
+  "bt_holdout_turnover": 239.0,
+  "bt_holdout_fees_paid": 0.1195,
+  "bt_holdout_gated_entries": 6,
   "by_regime_search": {
     "ranging": {
       "n_bars": 921,
-      "total_return": 0.03760117106210743,
-      "sharpe": 3.875234069385448,
-      "avg_bar_reward": 4.0826461522375064e-05
+      "total_return": -0.17362688494411493,
+      "sharpe": -14.43629227087919,
+      "avg_bar_reward": -0.00018851996193714976
     },
     "transitional": {
       "n_bars": 555,
-      "total_return": 0.077092205723201,
-      "sharpe": 22.636859789559665,
-      "avg_bar_reward": 0.00013890487517693873
+      "total_return": 0.1281168649579111,
+      "sharpe": 16.586513620779186,
+      "avg_bar_reward": 0.00023084119812236237
     },
     "trending": {
       "n_bars": 589,
-      "total_return": -0.07642519570609456,
-      "sharpe": -13.253628786468722,
-      "avg_bar_reward": -0.00012975415230236768
+      "total_return": -0.2426011072402077,
+      "sharpe": -30.404654492175652,
+      "avg_bar_reward": -0.0004118864299494188
     }
   },
   "by_regime_holdout": {
     "ranging": {
       "n_bars": 420,
-      "total_return": -0.04243479817738286,
-      "sharpe": -9.565305393203337,
-      "avg_bar_reward": -0.00010103523375567348
+      "total_return": -0.01131682628614547,
+      "sharpe": -1.9666818287457706,
+      "avg_bar_reward": -2.6944824490822547e-05
     },
     "transitional": {
       "n_bars": 210,
-      "total_return": 0.015298650763341371,
-      "sharpe": 8.65394197009877,
-      "avg_bar_reward": 7.28507179206732e-05
+      "total_return": -0.11619467943170433,
+      "sharpe": -38.854079520013215,
+      "avg_bar_reward": -0.0005533079972938302
     },
     "trending": {
       "n_bars": 255,
-      "total_return": -0.08218865679016477,
-      "sharpe": -39.77088307890542,
-      "avg_bar_reward": -0.00032230845800064613
+      "total_return": 0.0016443610436190775,
+      "sharpe": 0.5163355965022379,
+      "avg_bar_reward": 6.4484746808591275e-06
     }
   },
-  "ts_utc": "2026-08-16T20:16:05.398921+00:00"
+  "ts_utc": "2026-08-23T20:16:05.954112+00:00"
 }
