@@ -1,0 +1,11 @@
+rule,window,days_in_mkt,days,total_ret,sharpe,max_dd
+down>15%_in_7d,IS,24,292,0.8297,2.48,-0.1146
+down>15%_in_7d,OOS,5,126,0.181,1.8925,-0.0785
+funding_flip_pos->neg,IS,16,292,0.3237,1.7714,-0.0859
+funding_flip_pos->neg,OOS,15,126,0.4467,3.3764,-0.0566
+vix_drop>10%_5d,IS,37,292,0.7201,2.0363,-0.2097
+vix_drop>10%_5d,OOS,18,126,0.3599,3.074,-0.0748
+UNION_top3,IS,74,292,3.2107,3.696,-0.2146
+UNION_top3,OOS,34,126,0.8372,3.9665,-0.0785
+buy_hold,IS,292,292,0.2823,0.7976,-0.6424
+buy_hold,OOS,126,125,0.4461,1.6475,-0.2852
