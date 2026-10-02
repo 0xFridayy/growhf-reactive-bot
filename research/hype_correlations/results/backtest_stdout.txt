@@ -1,0 +1,62 @@
+dataset: 418 days  2025-05-30 -> 2026-07-21
+baseline daily ret: 0.271%  (ann. vol 95%)
+
+=== top IC (fwd 1d, FDR-significant) ===
+Empty DataFrame
+Columns: [ic_fwd1, p_fwd1, n_fwd1]
+Index: []
+
+=== event study (sorted by mean fwd1) ===
+                       n_fwd1  mean_fwd1  win_fwd1  t_fwd1  p_fwd1  fdr10_fwd1
+trigger                                                                       
+down>15%_in_7d             29     0.0290    0.7586  2.6381  0.0129       False
+funding_flip_pos->neg      31     0.0231    0.6452  2.6281  0.0125       False
+vix_drop>10%_5d            55     0.0171    0.6364  2.3766  0.0201       False
+hype_lag_btc_7d<-10%       36     0.0152    0.7500  1.5016  0.1408       False
+oi_up>5%_px_down           26     0.0114    0.5769  0.8367  0.4099       False
+big_up_day>8%              28     0.0112    0.5357  0.7281  0.4723       False
+funding_negative           61     0.0104    0.5410  1.2814  0.2037       False
+btc_up>2%                  52     0.0091    0.5577  1.1101  0.2706       False
+rsi<30                     21     0.0085    0.6667  0.4834  0.6337       False
+btc_down>2%                61     0.0083    0.4754  0.8324  0.4078       False
+funding_flip_neg->pos      31     0.0053    0.5161  0.3588  0.7217       False
+btc_exflow_z>1             39     0.0046    0.4872  0.2463  0.8065       False
+taker_buy_ratio<0.48      103     0.0038    0.5243  0.2373  0.8127       False
+up>15%_in_7d               69     0.0010    0.4493 -0.3105  0.7569       False
+top_ls_pos_rising         122    -0.0002    0.5246 -0.7369  0.4621       False
+rsi>70                     54    -0.0007    0.4630 -0.5774  0.5655       False
+oi_down>5%                 42    -0.0013    0.4048 -0.5287  0.5994       False
+big_down_day<-8%           13    -0.0022    0.4615 -0.2535  0.8040       False
+20d_breakout               49    -0.0023    0.4694 -0.7077  0.4819       False
+vix>25                     24    -0.0035    0.2917 -0.6327  0.5325       False
+vol_spike>2x               16    -0.0042    0.5000 -0.4114  0.6864       False
+oi_up>5%_px_up             32    -0.0061    0.3438 -0.9747  0.3363       False
+btc_exflow_z<-1            39    -0.0067    0.4615 -1.4638  0.1494       False
+vix_spike>15%_5d           47    -0.0090    0.4468 -1.7586  0.0838       False
+vol_spike>3x                4        NaN       NaN     NaN     NaN       False
+taker_buy_ratio>0.52        7        NaN       NaN     NaN     NaN       False
+
+baseline fwd1 mean: 0.271%
+
+=== in-sample top-3 triggers === ['down>15%_in_7d', 'funding_flip_pos->neg', 'vix_drop>10%_5d']
+                 rule window  days_in_mkt  days  total_ret  sharpe  max_dd
+       down>15%_in_7d     IS           24   292      0.830   2.480  -0.115
+       down>15%_in_7d    OOS            5   126      0.181   1.893  -0.078
+funding_flip_pos->neg     IS           16   292      0.324   1.771  -0.086
+funding_flip_pos->neg    OOS           15   126      0.447   3.376  -0.057
+      vix_drop>10%_5d     IS           37   292      0.720   2.036  -0.210
+      vix_drop>10%_5d    OOS           18   126      0.360   3.074  -0.075
+           UNION_top3     IS           74   292      3.211   3.696  -0.215
+           UNION_top3    OOS           34   126      0.837   3.966  -0.078
+             buy_hold     IS          292   292      0.282   0.798  -0.642
+             buy_hold    OOS          126   125      0.446   1.647  -0.285
+
+=== hourly spike study ===
+                          n  mean_fwd1h  win_fwd1h  t_fwd1h  mean_fwd4h  win_fwd4h  t_fwd4h  mean_fwd24h  win_fwd24h  t_fwd24h
+event                                                                                                                         
+up_spike>=3%_vol>=3x     20      0.0064     0.6500   2.0455      0.0078     0.6500   1.1503       0.0207      0.6500    1.2387
+down_spike<=-3%_vol>=3x  20      0.0063     0.7500   1.6008      0.0041     0.5000   0.5358       0.0121      0.6000    0.8991
+up_spike>=3%_lowvol      74     -0.0006     0.4865  -0.2963      0.0002     0.4730   0.0504       0.0078      0.4865    0.9375
+down_spike<=-3%_lowvol   53      0.0044     0.5094   1.4025     -0.0033     0.4906  -0.7898      -0.0182      0.3774   -2.6676
+up_spike>=5%_vol>=3x      4      0.0055     0.7500      NaN     -0.0021     0.5000      NaN      -0.0418      0.5000       NaN
+down_spike<=-5%_vol>=3x   3      0.0233     1.0000      NaN      0.0333     1.0000      NaN       0.0536      1.0000       NaN
